@@ -1,6 +1,7 @@
 #
 # Builds the extension (with httpfs) and runs the tests that need a cluster: the Docker HDFS clusters with an HttpFS
-# gateway and a fake standby NameNode, and a Kerberos-secured cluster with a local KDC.
+# gateway and a fake standby NameNode, and a Kerberos-secured cluster with a local KDC. It also loads the release
+# build into the stock DuckDB release with httpfs from DuckDB's extension repository, as users install it.
 #
 name: Integration Tests
 on:
@@ -54,6 +55,9 @@ jobs:
 
       - name: Kerberos tests
         run: test/scripts/run_kerberos_tests.sh
+
+      - name: Release build in stock DuckDB
+        run: test/scripts/run_loadable_smoke.sh
 
       - name: Benchmark
         run: |

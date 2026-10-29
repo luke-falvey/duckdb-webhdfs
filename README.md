@@ -193,7 +193,8 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
   that.
 - Not tested yet: `swebhdfs://` against a TLS cluster, a real Apache Knox (gateway paths and `http` secret headers
   were only checked against a stand-in server), Kerberos with a gateway that authenticates every request instead of
-  issuing tokens, and the loadable extension on macOS and Windows (on Linux it is tested in a stock DuckDB 2.0.0).
+  issuing tokens, and the loadable extension on macOS and Windows (on Linux, CI tests it in a stock DuckDB 2.0.0
+  with httpfs from DuckDB's extension repository).
 - No metadata-changing functions (`SETPERMISSION`, `SETOWNER`, quotas, snapshots).
 
 ## Building
@@ -214,6 +215,10 @@ The CI distribution build gets curl and OpenSSL from vcpkg (`vcpkg.json`). Artif
   table)
 - `build/release/test/unittest`: the test runner
 
+Builds are stamped with the DuckDB release the submodule is checked out at (`DUCKDB_VERSION`, from its git tag), so
+the loadable extension loads in that release (with `allow_unsigned_extensions`). DuckDB's CMake doesn't read git
+tags itself: a build without `DUCKDB_VERSION` is a dev build that only loads in a DuckDB built from the same commit.
+
 ## Testing
 
 ```sh
@@ -221,6 +226,7 @@ make test_unit                          # URL, glob, Hadoop config and JSON test
 build/release/test/unittest "test/sql/*"  # SQL tests; cluster tests are skipped without a cluster
 test/scripts/run_webhdfs_tests.sh       # Docker clusters + integration tests (needs Docker)
 test/scripts/run_kerberos_tests.sh      # KDC + Kerberized cluster + Kerberos tests (needs Docker and MIT Kerberos)
+make test_loadable                      # the release build in a stock DuckDB from pip, against the Docker cluster
 ```
 
 See [test/README.md](test/README.md) for what the clusters contain and how to run tests by hand.

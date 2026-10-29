@@ -1,7 +1,7 @@
 # Plan: a WebHDFS filesystem for DuckDB
 
-Status: proposal. Targets DuckDB v2.0.0, the same version as `duckdb-hdfs` and
-this repo's CI.
+Status: implemented (see "Implementation status" at the end). Targets DuckDB
+v2.0.0, the same version as `duckdb-hdfs` and this repo's CI.
 
 ## Goal
 
@@ -657,3 +657,42 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
   install and waits for it to time out before succeeding. If that proves
   annoying, change step 1 to load only (`TryAutoLoadAvailableExtension`) and
   leave installing to step 2, on the first actual request.
+
+## 10. Implementation status
+
+Everything in milestones 1–7 is implemented and tested against real Hadoop 3.4
+clusters in Docker (`test/sql/integration`, `test/sql/kerberos`). Where the
+implementation differs from this plan:
+
+- **Pruning partitions while listing (§5c) is not possible in DuckDB v2.0.0.**
+  `MultiFileReader::BindOptions` iterates every file of a scan at bind time
+  whenever `hive_partitioning` is on, to check that all files have the same
+  partition columns. So the whole tree is listed before the optimizer sees any
+  filter, whatever `hive_types_autocast` is. The `GlobFilesExtended` list,
+  pruner and pre-optimizer hook were built, confirmed to be bypassed this way,
+  and removed. What remains:
+  - a lazily expanded file list, so non-Hive scans start before a large walk
+    finishes;
+  - directories a pattern names literally (`year=2024/month={5,6}`) are
+    visited without listing their parent. The README recommends naming
+    partitions in the path; the benchmark shows 62 instead of 2,085 NameNode
+    requests for one month of a 1,680-partition table.
+  A DuckDB change that defers or skips the bind-time check would make the
+  original design possible again.
+- **httpfs is required specifically.** DuckDB core also has a built-in httplib
+  HTTP client (used for extension installs). It lacks httpfs's settings,
+  proxies and `http` secrets, so webhdfs only accepts httpfs's provider.
+  Loading first tries an httpfs that is already available (linked or
+  installed) and only then installs one, so an offline machine with httpfs
+  installed doesn't fail on the install step.
+- **Redirect reuse is per cluster, not per open file.** Redirects are keyed by
+  identity, path and file version, because DuckDB's Parquet reader opens each
+  file twice.
+- **Snapshots** are two functions: `webhdfs_snapshots(dir)` and
+  `webhdfs_snapshottable_directories(url)`.
+- **Kerberos tokens** are fetched again after 12 hours or when rejected, but
+  not cancelled on shutdown (they expire on their own). The Kerberos tests run
+  an unprivileged MIT KDC on the host rather than in a container.
+- **The no-httpfs test** works in the regular test runner, because the runner
+  turns extension autoloading off.
+

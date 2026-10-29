@@ -1,0 +1,62 @@
+#
+# Builds the extension (with httpfs) and runs the tests that need a cluster: the Docker HDFS clusters with an HttpFS
+# gateway and a fake standby NameNode, and a Kerberos-secured cluster with a local KDC.
+#
+name: Integration Tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: WebHDFS integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GEN: ninja
+      DUCKDB_VERSION: v2.0.0
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install build and Kerberos tools
+        run: |
+          sudo apt-get update -y -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ninja-build ccache libcurl4-openssl-dev \
+            libssl-dev krb5-kdc krb5-admin-server krb5-user
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-integration-${{ hashFiles('.gitmodules', 'extension_config.cmake') }}-${{ github.sha }}
+          restore-keys: ccache-integration-${{ hashFiles('.gitmodules', 'extension_config.cmake') }}-
+
+      - name: Build
+        run: make release
+
+      - name: Unit tests
+        run: make test_unit
+
+      - name: SQL tests (no cluster)
+        run: build/release/test/unittest "test/sql/*"
+
+      - name: Integration tests (Docker clusters)
+        run: test/scripts/run_webhdfs_tests.sh
+
+      - name: Kerberos tests
+        run: test/scripts/run_kerberos_tests.sh
+
+      - name: Benchmark
+        run: |
+          test/scripts/webhdfs_up.sh
+          test/bench/webhdfs_bench.sh --seed
+          test/scripts/webhdfs_down.sh

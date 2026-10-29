@@ -30,6 +30,14 @@ Why it is worth having next to `duckdb-hdfs`:
 - **The user model is the same.** Users get the same globbing, listing functions,
   and settings as the hdfs extension, under a `webhdfs_` prefix.
 
+**Rule: no code is shared with duckdb-hdfs.** This extension is written from
+scratch. duckdb-hdfs is a reference for behaviour and for the user-facing
+interface only: setting names, function columns, glob semantics. No source files
+are copied, vendored, submoduled or pulled from a common repo. The two
+extensions can then change on their own schedules, and neither ties the other to
+its build. Where this plan says "as in duckdb-hdfs", it means the same behaviour,
+implemented here.
+
 ## 1. How httpfs supplies HTTP
 
 DuckDB v2.0.0 core defines an abstract HTTP layer in
@@ -57,19 +65,40 @@ Any dependency on httpfs at compile time would break the loadable build.
 
 ### Making sure httpfs is there
 
-One helper, `WebHdfsHTTP::Get(DatabaseInstance &)`, is called before every
-request:
+DuckDB extensions can't declare a dependency on another extension in their
+metadata. So webhdfs loads httpfs itself, in two steps.
 
-1. If `HTTPUtil::Get(db).GetName() == "none"`, call
-   `ExtensionHelper::TryAutoLoadExtension(db, "httpfs")`. This follows the
-   user's `autoload_known_extensions` and `autoinstall_known_extensions`
-   settings, and core uses the same pattern for its crypto utility.
+**Step 1: when webhdfs loads, try to load httpfs (it may fail).**
+
+- `LoadInternal` calls `ExtensionHelper::TryAutoLoadExtension(db, "httpfs")`.
+- If httpfs isn't installed yet, that function installs it from the autoinstall
+  repository and then loads it.
+- It follows the user's `autoinstall_known_extensions` and
+  `autoload_known_extensions` settings. Both are on by default in DuckDB v2.0.0.
+- It is `noexcept` and returns false on failure, for example when offline or
+  when autoloading is off. In that case `LOAD webhdfs` still succeeds.
+- Loading one extension from inside another's load step is safe. DuckDB's
+  `ExtensionManager::BeginLoad` takes a lock per extension, not a global one.
+  `duckdb-iceberg` already loads its dependencies this way.
+- Doing this when webhdfs loads also means httpfs's settings and secret types
+  exist straight away. `SET http_timeout = …` and `CREATE SECRET (TYPE http …)`
+  work right after `LOAD webhdfs`, before any WebHDFS path has been touched.
+
+**Step 2: before every request, check that httpfs is there.**
+
+One helper, `WebHdfsHTTP::Get(DatabaseInstance &)`, runs before every request:
+
+1. If `HTTPUtil::Get(db).GetName() == "none"`, call `TryAutoLoadExtension`
+   again. This covers sessions where step 1 failed but the cause has since gone
+   away.
 2. If the provider is still `"none"`, throw
    `MissingExtensionException("webhdfs requires the httpfs extension: INSTALL httpfs; LOAD httpfs;")`.
 
-This check happens lazily, on first use, rather than in `Load()`. That avoids
-load-order problems, and the extension can still load in a session that never
-touches WebHDFS.
+The provider is looked up on every request and never cached. So if a user runs
+`LOAD httpfs` by hand after webhdfs, it is picked up at once.
+
+In builds where httpfs is statically linked (the test runner and the bundled
+shell, see §2), it is already loaded and both steps do nothing.
 
 ### Request rules
 
@@ -81,14 +110,17 @@ touches WebHDFS.
 | Retries | Use httpfs retries for idempotent ops (GET, PUT `CREATE`, DELETE, `RENAME`, `MKDIRS`). For `POST APPEND` to a DataNode, set `retries = 0`: replaying it could duplicate data. |
 | Client reuse | Keep one `unique_ptr<HTTPClient>` per open file handle, so sequential reads reuse a single keep-alive connection, and return it with `CloseClient` when the handle closes. Metadata calls use the shared pool. |
 
-## 2. Source layout (mapped from duckdb-hdfs)
+## 2. Source layout
 
-| duckdb-hdfs | duckdb-webhdfs | Notes |
+All files are new and written for this repo. The left column only shows which
+duckdb-hdfs file covers the same job, for orientation.
+
+| Same job in duckdb-hdfs | duckdb-webhdfs | Notes |
 |---|---|---|
 | `hdfs_extension.cpp` | `webhdfs_extension.cpp` | Registers both schemes, settings, the `webhdfs` secret type, and the SQL functions. |
 | `hdfs_bridge.{h,cpp}` (libhdfs3) | `webhdfs_client.{hpp,cpp}` | The REST layer: URL and operation building, auth query parameters, NameNode selection and failover, redirect handling, JSON → `WebHdfsEntry`, and error mapping. It is the only file that talks to `HTTPUtil`. |
-| `hdfs_filesystem.{hpp,cpp}` | `webhdfs_filesystem.{hpp,cpp}` | `FileSystem` subclass. Its structure and comments carry over almost unchanged: handles, extended open, extended listing, version tag, and directory ops. |
-| `hdfs_glob.{hpp,cpp}` | `webhdfs_glob.{hpp,cpp}` | Copied as is. It is pure C++ with no libhdfs3 dependency. Later the two repos could share it as a git subtree. |
+| `hdfs_filesystem.{hpp,cpp}` | `webhdfs_filesystem.{hpp,cpp}` | `FileSystem` subclass: handles, extended open, extended listing, version tag, directory ops, and the filter-aware file list (§5c). |
+| `hdfs_glob.{hpp,cpp}` | `webhdfs_glob.{hpp,cpp}` | Our own glob engine (§5), written to the same pattern syntax so users see the same behaviour. It is designed from the start to accept partition filters while it walks. |
 | `hdfs_functions.{hpp,cpp}` | `webhdfs_functions.{hpp,cpp}` | `webhdfs_ls`, `webhdfs_stat` and `webhdfs_exists`, with the same columns and named parameters. |
 | `hdfs_batch.hpp` | — | Not needed. WebHDFS has no batched multi-directory listing, so parallelism comes from concurrent requests (§5). |
 | `hdfs_crypto.*` | — | Out of scope. Encryption zones are decrypted on the DataNode for WebHDFS reads. |
@@ -114,8 +146,8 @@ Build changes:
 
   This is for tests and the bundled shell only. The `webhdfs` target itself does
   not link httpfs.
-- Copy the hdfs repo's `.clang-format`/`.clang-tidy` setup and `test_unit`
-  Makefile target.
+- Set up our own `.clang-format`/`.clang-tidy` files and a `test_unit` Makefile
+  target that builds the C++ unit tests in `test/cpp`.
 
 ## 3. Mapping FileSystem calls to WebHDFS
 
@@ -240,8 +272,10 @@ come from httpfs settings and `http` secrets. We don't add duplicates of these.
 | Kerberos (SPNEGO) | See below. | 3 |
 
 Kerberos (SPNEGO): the extension builds the `Authorization: Negotiate` token
-itself with GSSAPI. It uses the krb5 vcpkg port already in duckdb-hdfs and loads
-GSSAPI with `dlopen` so platforms without it still work. The flow:
+itself with GSSAPI, loaded with `dlopen` from the system's Kerberos library
+(`libgssapi_krb5` on Linux, `GSS.framework` on macOS, SSPI on Windows). Nothing
+is built through vcpkg, and platforms without Kerberos still load the extension.
+The flow:
 
 1. Call `GETDELEGATIONTOKEN` once per NameNode with SPNEGO.
 2. Use the returned token as `delegation=` on every later request. That avoids a
@@ -269,16 +303,25 @@ The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
 
 ## 5. Listing, globbing and SQL functions
 
-- Reuse `hdfs_glob` unchanged (`GlobPlan::Parse`, `Match`, `IsHidden`, brace
-  expansion), keeping its semantics: `**`, `{a,b}`, hidden-entry rules,
-  `skip_permission_errors`, and only listing directories the pattern can match.
-- Port `HdfsListStream` as `WebHdfsListStream`. A background walk has a
+- **Glob engine (`webhdfs_glob`).** Written here, to the same user-facing syntax
+  as duckdb-hdfs:
+  - DuckDB's `*`, `?`, `[abc]`, `[!abc]` and `\` escapes
+  - `**` as a whole path component meaning any depth
+  - Hadoop-style `{a,b}` alternation
+  - hidden-entry rules: names starting with `_` or `.` are skipped unless the
+    pattern names them
+  - `skip_permission_errors`
+
+  The pattern compiles to a list of components. The walk lists only directories
+  the pattern can still match. Each component also records whether it is a
+  `key=value` partition level, which is what §5c uses for pruning.
+- **`WebHdfsListStream`.** A background walk has a
   bounded queue of pending directories and up to `webhdfs_list_parallelism`
   `LISTSTATUS_BATCH` requests in flight on worker threads. Entries stream to
   `Next()` in completion order, and `LISTSTATUS_BATCH` pages are queued as
   continuation items. Retry rules are the same: a connection failure retries
   transparently only before any entry has been handed out.
-- **Settings**, matching the hdfs extension with the prefix swapped:
+- **Settings.** The names match the hdfs extension's, with the prefix swapped:
 
   | Setting | Default |
   |---|---|
@@ -289,13 +332,14 @@ The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
   | `webhdfs_write_chunk_size` | 64 MiB |
   | `webhdfs_reuse_redirects` | true |
   | `webhdfs_user_name` | unset |
+  | `webhdfs_partition_pruning` | true (§5c) |
 
 - **SQL functions.** `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)`,
   `webhdfs_stat(url)` and `webhdfs_exists(url)` return the same columns as the
   hdfs versions: `path`, `name`, `type`, `size`, `owner`, `group`,
   `permissions`, `mode`, `replication`, `block_size`, `last_modified`,
   `last_accessed`. WebHDFS gives the `permission` field as an octal string, which
-  we parse into `mode`. Port `hdfs_functions.cpp` almost line for line.
+  we parse into `mode`.
 
 ## 5a. Multiple NameNodes
 
@@ -357,8 +401,8 @@ row per item. They are grouped by milestone.
 
 Design notes:
 
-- **Shared plumbing.** The functions share one table-function scaffold, ported
-  from `hdfs_functions.cpp`. A JSON-to-row adapter per operation keeps each new
+- **Common scaffolding.** The functions share one table-function scaffold
+  within this extension. A JSON-to-row adapter per operation keeps each new
   function to about 50 lines. That matters because the list is long and the
   WebHDFS responses differ in shape.
 - **Lateral calls.** Each function also accepts a column argument in a lateral
@@ -373,6 +417,97 @@ Design notes:
 - **No writes.** All of these are read-only. Writing metadata (`SETPERMISSION`,
   `SETOWNER`, `SETXATTR`, `SETREPLICATION`, quotas, snapshots) is left out on
   purpose. It could follow later as scalar functions that need explicit opt-in.
+
+## 5c. Partitioned (Hive-style) data
+
+### Reading
+
+DuckDB core handles Hive partitioning. webhdfs only has to glob and list
+correctly:
+
+```sql
+SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/**/*.parquet',
+                           hive_partitioning = true)
+WHERE year = 2024 AND month = 10;
+```
+
+1. webhdfs expands the glob, listing only the directories the pattern can reach.
+2. DuckDB parses `key=value` folders into columns. `hive_types` and
+   `hive_types_autocast` work as usual.
+3. DuckDB's `MultiFileList::ComplexFilterPushdown` drops files whose partition
+   values fail the `WHERE` clause, before opening them. Dropped files cost no
+   WebHDFS requests.
+4. The hidden-entry default skips the leftovers Spark and Hive write (`_SUCCESS`,
+   `_temporary/`, `.crc` files), so nothing extra appears as a file or a
+   partition.
+
+Because listings carry size and modification time in `extended_info`, opening
+the files that survive needs no extra `GETFILESTATUS`.
+
+### Pruning partitions while listing
+
+**The gap.** In DuckDB v2.0.0 the default `ComplexFilterPushdown` calls
+`GetAllFiles()`, which expands the whole glob first and filters afterwards.
+With `**`, or `*` at partition levels, every partition directory is listed, at
+one NameNode request each, even when the query wants one month. On a table with
+years of daily partitions, that is thousands of requests before any data is
+read.
+
+**The fix.** Core lets a filesystem supply its own file list, through
+`FileSystem::GlobFilesExtended` and `SupportsGlobExtended`; httpfs uses this for
+S3. webhdfs returns a `WebHdfsMultiFileList`, a `LazyMultiFileList` subclass.
+It overrides `ComplexFilterPushdown` and `DynamicFilterPushdown` so the filters
+are applied during the walk:
+
+- **When pushdown runs**, the list hasn't started walking yet. It keeps the
+  filter expressions that refer only to partition columns (via `column_map`,
+  the same input core's `HivePartitioning` uses) and returns a new, unexpanded
+  list that carries them.
+- **During the walk**, each time it enters a directory named `key=value`, it
+  knows the values of every partition column above that point. It evaluates each
+  filter conjunct whose columns are all known, with the same value parsing as
+  core (`HivePartitioning::GetValue`, which also handles `NULL` and
+  `__HIVE_DEFAULT_PARTITION__`). If a conjunct is false, it skips the whole
+  subtree without listing it. Conjuncts whose columns aren't known yet wait for
+  deeper levels.
+- **Equality shortcut.** If a conjunct is `key = constant`, or
+  `key IN (constants)`, and the next pattern component is a wildcard, the walk
+  goes straight to `key=<escaped value>` with one `GETFILESTATUS` per value. It
+  doesn't list the parent at all. A missing folder simply means no files.
+- **Safety.** The walk only prunes by partition columns. Core still runs its own
+  filter over the files that come back, so a pruning bug can only cost extra
+  requests, never wrong results, as long as pruning never drops a file that
+  should match. Tests (§7) compare pruned and unpruned file lists on the same
+  fixtures to check exactly that.
+- **Display and cardinality.** `GetDisplayFileList` and `GetTotalFileCount`
+  expand lazily, as the base class does, so `EXPLAIN` and progress reporting
+  keep working.
+
+For `WHERE year = 2024 AND month = 10` over `year=*/month=*/day=*`, the walk
+makes one request for `year=2024/month=10/`, then one listing per day under it,
+instead of a listing for every directory in the table.
+
+Until this lands (milestone 5), the workaround from the duckdb-hdfs README
+applies: put fixed folder names in the path where possible, for example
+`…/year=2024/month=10/*/*.parquet`.
+
+### Writing
+
+```sql
+COPY t TO 'webhdfs://nn:9870/out' (FORMAT parquet, PARTITION_BY (year, month));
+```
+
+This uses only the filesystem operations from §3, so it needs no special code:
+
+- `DirectoryExists` and `CreateDirectoryExtended` (`MKDIRS`) for each
+  `key=value` folder
+- `FileExists` and `RemoveFile` / `RemoveDirectoryExtended` for
+  `OVERWRITE_OR_IGNORE` and `OVERWRITE`
+- one write handle per open partition (`CREATE`, then `APPEND`)
+
+Memory is the concern: each open partition holds a write buffer (§3 Writes and
+§9). `webhdfs_write_chunk_size` should be documented next to DuckDB's
+`partitioned_write_max_open_files`.
 
 ## 6. Errors
 
@@ -402,21 +537,31 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
   - error mapping
   - `hdfs-site.xml` HA resolution
   - DataNode address mapping
-  - the glob tests, copied from duckdb-hdfs
+  - glob engine tests, written here (pattern parsing, matching, hidden rules,
+    `{a,b}`, `**`)
+  - partition pruning: for a fake directory tree and a set of filters, the
+    pruned walk returns the same files as a full walk followed by core's filter,
+    and lists fewer directories
 - **SQL tests without a cluster** (`test/sql/webhdfs_no_cluster.test`):
   - scheme handling
   - settings and secret creation
   - a friendly error when the NameNode is unreachable
   - a missing-httpfs test that runs on a loadable-only build, where
     `autoload_known_extensions=false` gives the "requires httpfs" message
+  - `LOAD webhdfs` loads httpfs too, so `SET http_timeout` works right after it
 - **Integration tests** (`test/sql/webhdfs.test`, gated by
-  `require-env WEBHDFS_TEST_RUNNING`). Reuse `duckdb-hdfs/test/docker`, which
-  already runs a single-node cluster with the NameNode HTTP port 9870. Add the
-  DataNode HTTP port 9864 and advertise the DataNode as `localhost`, or test
-  `DATANODE_ADDRESS_MAP` instead. Add `test/scripts/webhdfs_up.sh`,
-  `webhdfs_down.sh` and `run_webhdfs_tests.sh` on the hdfs pattern. Cover:
+  `require-env WEBHDFS_TEST_RUNNING`). This repo gets its own `test/docker`: a
+  single-node Hadoop cluster built from the official `apache/hadoop` image, with
+  the NameNode HTTP port 9870 and the DataNode HTTP port 9864 published. The
+  DataNode is advertised as `localhost`, and a second run uses
+  `DATANODE_ADDRESS_MAP` instead. Scripts: `test/scripts/webhdfs_up.sh` (start
+  and seed fixtures), `webhdfs_down.sh` and `run_webhdfs_tests.sh`. Cover:
   - reading CSV, Parquet and JSON
-  - `COPY` with `PARTITION_BY`
+  - `COPY` with `PARTITION_BY`, then reading it back with `hive_partitioning`
+  - Hive reads with partition filters: the results match an unfiltered read, and
+    the HTTP log (`duckdb_logs` with the HTTP log type) shows fewer listing
+    requests than the number of partition directories
+  - Spark-style output with `_SUCCESS` and `_temporary/` present
   - multi-chunk writes, which exercise `APPEND`
   - glob, `ls` and `stat`
   - rename, delete and `mkdir`
@@ -434,24 +579,27 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
   Assert exact values where the fixture makes them deterministic (sizes, counts,
   quotas we set with `hdfs dfsadmin -setQuota` in `webhdfs_up.sh`), and only the
   shape and types otherwise.
-- **Kerberos (phase 3).** Reuse `duckdb-hdfs/test/docker-kerberos`, whose
-  NameNode HTTP port is 19870.
+- **Kerberos (milestone 6).** A separate `test/docker-kerberos` in this repo: a
+  KDC container plus a Kerberized single-node cluster with SPNEGO on the
+  NameNode and DataNode HTTP endpoints.
 - **CI.** Rename `extension_name` in `MainDistributionPipeline.yml`. Add a Linux
-  job that runs the Docker integration tests, as duckdb-hdfs does.
+  job that runs the Docker integration tests.
 
 ## 8. Milestones
 
-1. **Skeleton and reads.** Rename the template. Add the httpfs presence check,
+1. **Skeleton and reads.** Rename the template. Add the two-step httpfs loading
+   (§1),
    URL parsing, the REST client with simple auth, `GETFILESTATUS`, `OPEN` with
    the two-step redirect, and the read-ahead buffer. Register the filesystem.
    - Done when: `SELECT * FROM 'webhdfs://localhost:9870/x.parquet'` works
      against the Docker cluster; no-cluster tests and unit tests run in CI.
-2. **Listing and globbing.** `LISTSTATUS[_BATCH]`, extended info, the ported glob
+2. **Listing and globbing.** `LISTSTATUS[_BATCH]`, extended info, our glob
    engine with the parallel walk, `ListFilesExtended`, the `webhdfs_ls`, `_stat`
    and `_exists` functions, and the hidden/permission settings.
    Also `webhdfs_content_summary`.
-   - Done when: the hdfs extension's listing and glob tests pass with the scheme
-     swapped.
+   - Done when: glob, listing and hidden-file tests pass, and Hive-partitioned
+     Parquet reads with `hive_partitioning = true` return correct results (core
+     filters after a full listing).
 3. **Writes and directory ops.** `CREATE`/`APPEND` chunking, `MKDIRS`, `DELETE`,
    `RENAME`, and the `*Extended` variants.
    - Done when: `COPY … TO` (single file and `PARTITION_BY`) round-trips.
@@ -462,13 +610,21 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
    Document Knox and HttpFS use through `http` secrets.
    - Done when: one query reads from two Docker clusters with different users,
      and failover passes with a dead NameNode listed first.
-5. **Performance.** Redirect reuse, per-handle client reuse, tuning the
-   read-ahead and parallelism defaults, and a small benchmark modelled on the
-   hdfs repo's `test/bench`.
+5. **Performance.**
+   - Partition pruning while listing (§5c): `GlobFilesExtended`, then
+     `WebHdfsMultiFileList` with filter and dynamic-filter pushdown, then the
+     equality shortcut.
+   - Redirect reuse and per-handle client reuse.
+   - Tuning the read-ahead and parallelism defaults.
+   - A benchmark in `test/bench` that reports wall time and NameNode request
+     counts. It includes a partitioned table with thousands of folders, queried
+     with and without partition filters.
+   - Done when: a filtered query on the benchmark table lists only the matching
+     partitions, and the pruning tests in §7 pass.
 6. **Kerberos/SPNEGO.** GSSAPI token generation, the delegation-token bootstrap
    and renewal, and the Kerberos Docker tests.
-7. **README.** A user-facing README in the style of duckdb-hdfs: what works,
-   what doesn't, configuration, performance notes, building, and testing.
+7. **README.** A user-facing README: what works, what doesn't, configuration,
+   partitioned data, performance notes, building, and testing.
 
 ## 9. Risks and open questions
 
@@ -487,6 +643,17 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
   because core's prefix → extension table only covers known extensions. Users
   must run `LOAD webhdfs` (or `INSTALL` it from a community repo). The httpfs
   side autoloads.
-- **Sharing code with duckdb-hdfs.** The glob engine, the metadata-function
-  scaffolding and the walk options are now duplicated. Once both extensions are
-  stable, consider pulling them into a small shared repo used as a submodule.
+- **Keeping behaviour in step with duckdb-hdfs.** Code is not shared (see the
+  rule at the top), so the two extensions can drift in glob or hidden-file
+  behaviour. Our own tests cover the behaviour users rely on: patterns, hidden
+  entries, function columns. Differences are listed in the README.
+- **Partition-pruning API stability.** `GlobFilesExtended` and the
+  `MultiFileList` pushdown hooks are newer core APIs and may change between
+  DuckDB releases. Keep that code in one file (`webhdfs_multi_file_list.cpp`)
+  behind a setting (`webhdfs_partition_pruning`, default true) that falls back
+  to the plain `Glob`.
+- **httpfs loading when webhdfs loads.** If a user has
+  `autoinstall_known_extensions` on but no network, `LOAD webhdfs` tries an
+  install and waits for it to time out before succeeding. If that proves
+  annoying, change step 1 to load only (`TryAutoLoadAvailableExtension`) and
+  leave installing to step 2, on the first actual request.

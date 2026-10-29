@@ -1,0 +1,13 @@
+# A Kerberos-secured single-node HDFS for the SPNEGO tests. The KDC runs on the host (test/scripts/kerberos_up.sh
+# starts it, unprivileged, on port 18888); this container uses the host network so the NameNode, the DataNode and
+# the KDC all answer on localhost. Ports are shifted (NameNode HTTP 29870, DataNode HTTP 29864) so this cluster can
+# run next to the plain ones.
+services:
+  hdfs-kerberos:
+    image: apache/hadoop:3.4.1
+    container_name: webhdfs-test-kerberos
+    network_mode: host
+    entrypoint: ["/bin/bash", "/conf/entrypoint.sh"]
+    volumes:
+      - ./:/conf:ro
+      - ../../build/kerberos:/kerberos:ro

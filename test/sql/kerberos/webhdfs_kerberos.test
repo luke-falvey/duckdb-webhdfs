@@ -1,0 +1,60 @@
+# name: test/sql/kerberos/webhdfs_kerberos.test
+# description: SPNEGO authentication against a Kerberos-secured cluster (test/scripts/run_kerberos_tests.sh)
+# group: [webhdfs]
+
+require webhdfs
+
+require httpfs
+
+require-env WEBHDFS_KERBEROS_TEST_RUNNING
+
+# the identity is alice, from the ticket cache (KRB5CCNAME); a delegation token is fetched once with SPNEGO
+statement ok
+CREATE SECRET kerberized (TYPE webhdfs, SCOPE 'webhdfs://localhost:29870', AUTH 'kerberos');
+
+query IT
+SELECT * FROM read_csv('webhdfs://localhost:29870/kerb/data.csv') ORDER BY id;
+----
+1	kerberos
+2	spnego
+
+query TT
+SELECT name, owner FROM webhdfs_ls('webhdfs://localhost:29870/kerb') WHERE name IN ('data.csv', 'private') ORDER BY name;
+----
+data.csv	nn
+private	nn
+
+statement ok
+COPY (SELECT 1 AS a, 'written by alice' AS b) TO 'webhdfs://localhost:29870/kerb/alice.csv';
+
+query T
+SELECT owner FROM webhdfs_stat('webhdfs://localhost:29870/kerb/alice.csv');
+----
+alice
+
+query T
+SELECT b FROM read_csv('webhdfs://localhost:29870/kerb/alice.csv');
+----
+written by alice
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:29870/kerb/private/secret.csv');
+----
+user=alice
+
+query TII
+SELECT auth_mode, active, datanode_requests > 0 FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:29870';
+----
+kerberos	true	true
+
+# without a secret, hadoop.security.authentication=kerberos in core-site.xml selects Kerberos
+statement ok
+DROP SECRET kerberized;
+
+require-env HADOOP_CONF_DIR
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:29870/kerb/data.csv');
+----
+2
+

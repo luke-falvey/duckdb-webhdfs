@@ -13,4 +13,4 @@ if [ "$WEBHDFS_START_HTTPFS" = "1" ]; then
   hdfs --daemon start httpfs
 fi
 echo "HDFS started"
-exec tail -F /var/log/hadoop/*.log
+exec tail -F /var/log/hadoop/*.out

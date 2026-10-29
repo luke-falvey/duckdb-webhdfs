@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>fs.defaultFS</name><value>hdfs://localhost:28020</value></property>
+  <property><name>hadoop.tmp.dir</name><value>/tmp/hadoop-kerberos</value></property>
+  <property><name>hadoop.security.authentication</name><value>kerberos</value></property>
+  <property><name>hadoop.security.authorization</name><value>false</value></property>
+  <property><name>hadoop.rpc.protection</name><value>authentication</value></property>
+  <!-- SPNEGO on the HTTP endpoints (WebHDFS included) -->
+  <property><name>hadoop.http.filter.initializers</name><value>org.apache.hadoop.security.AuthenticationFilterInitializer</value></property>
+  <property><name>hadoop.http.authentication.type</name><value>kerberos</value></property>
+  <property><name>hadoop.http.authentication.simple.anonymous.allowed</name><value>false</value></property>
+  <property><name>hadoop.http.authentication.kerberos.principal</name><value>HTTP/localhost@EXAMPLE.COM</value></property>
+  <property><name>hadoop.http.authentication.kerberos.keytab</name><value>/kerberos/hdfs.keytab</value></property>
+</configuration>

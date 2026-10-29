@@ -1,0 +1,115 @@
+# name: test/sql/webhdfs_no_cluster.test
+# description: webhdfs behaviour that needs no cluster
+# group: [webhdfs]
+
+require webhdfs
+
+require httpfs
+
+query IIIII
+SELECT current_setting('webhdfs_list_parallelism'), current_setting('webhdfs_include_hidden'), current_setting('webhdfs_write_chunk_size'), current_setting('webhdfs_read_buffer_size'), current_setting('webhdfs_reuse_redirects');
+----
+16	false	67108864	1048576	true
+
+# invalid URLs
+statement error
+SELECT * FROM read_csv('webhdfs:///data/x.csv');
+----
+missing NameNode host
+
+statement error
+SELECT * FROM read_csv('webhdfs://nn:99999/x.csv');
+----
+invalid host or port
+
+statement error
+SELECT * FROM read_csv('webhdfs://user@nn/x.csv');
+----
+user names in the URL are not supported
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:1/a/{b,c/x.csv');
+----
+Invalid WebHDFS glob pattern
+
+# nothing listens on port 1
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:1/x.csv');
+----
+no NameNode could serve the request
+
+statement error
+SELECT * FROM read_csv('swebhdfs://localhost:1/data/*.csv');
+----
+no NameNode could serve the request
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:1/');
+----
+no NameNode could serve the request
+
+query TTTII
+SELECT endpoint, namenode, state, active, last_error IS NOT NULL FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:1';
+----
+webhdfs://localhost:1	localhost:1	unreachable	false	true
+
+query I
+SELECT webhdfs_exists(NULL);
+----
+NULL
+
+# secrets
+statement ok
+CREATE SECRET hdfs_a (TYPE webhdfs, SCOPE 'webhdfs://cluster-a', USER_NAME 'alice', DELEGATION_TOKEN 'tok123', NAMENODES ['nn1:9870', 'nn2:9870'], DATANODE_ADDRESS_MAP MAP {'dn1:9864': 'localhost:9864'}, GATEWAY_PATH '/gateway/default', USE_SSL false, REPLICATION 2, BLOCK_SIZE 1048576, PERMISSION '640');
+
+query TTTT
+SELECT name, type, provider, scope FROM duckdb_secrets() WHERE name = 'hdfs_a';
+----
+hdfs_a	webhdfs	config	['webhdfs://cluster-a']
+
+# the delegation token is redacted
+query I
+SELECT secret_string NOT LIKE '%tok123%' FROM duckdb_secrets() WHERE name = 'hdfs_a';
+----
+true
+
+statement ok
+CREATE SECRET hdfs_default (TYPE webhdfs);
+
+query T
+SELECT scope FROM duckdb_secrets() WHERE name = 'hdfs_default';
+----
+['webhdfs://', 'swebhdfs://']
+
+statement error
+CREATE SECRET bad1 (TYPE webhdfs, AUTH 'basic');
+----
+AUTH must be 'simple', 'token', 'kerberos' or 'none'
+
+statement error
+CREATE SECRET bad2 (TYPE webhdfs, NO_SUCH_OPTION 'x');
+----
+
+
+statement ok
+CREATE SECRET tok (TYPE webhdfs, SCOPE 'webhdfs://localhost:2', AUTH 'token');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:2/x.csv');
+----
+AUTH 'token' needs a DELEGATION_TOKEN
+
+# HA: every NameNode of the list is tried
+statement ok
+CREATE SECRET dead (TYPE webhdfs, SCOPE 'webhdfs://deadlist', NAMENODES ['localhost:1', 'localhost:2']);
+
+statement error
+SELECT * FROM read_csv('webhdfs://deadlist/x.csv');
+----
+localhost:2: 
+
+query IITT
+SELECT count(*), bool_and(state = 'unreachable'), any_value(namenode_source), any_value(secret_name) FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://deadlist';
+----
+2	true	secret	dead
+

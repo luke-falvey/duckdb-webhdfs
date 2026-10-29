@@ -620,12 +620,12 @@ static OperatorResultType MetaInOut(ExecutionContext &context, TableFunctionInpu
 			state.row++;
 			continue;
 		}
-		for (idx_t r = 0; r < rows.size(); r++) {
-			for (idx_t c = 0; c < rows[r].size(); c++) {
-				output.SetValue(c, r, rows[r][c]);
+		for (auto &row : rows) {
+			for (idx_t c = 0; c < row.size(); c++) {
+				output.data[c].Append(row[c]);
 			}
 		}
-		output.SetCardinality(rows.size());
+		output.SetChildCardinality(rows.size());
 		return OperatorResultType::HAVE_MORE_OUTPUT;
 	}
 }
@@ -736,11 +736,11 @@ static void NameNodesFunction(ClientContext &context, TableFunctionInput &data, 
 	while (state.position < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
 		auto &row = state.rows[state.position++];
 		for (idx_t c = 0; c < row.size(); c++) {
-			output.SetValue(c, count, row[c]);
+			output.data[c].Append(row[c]);
 		}
 		count++;
 	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 }
 
 //===--------------------------------------------------------------------===//

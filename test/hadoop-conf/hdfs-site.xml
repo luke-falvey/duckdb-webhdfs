@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- Client configuration used by the integration tests (HADOOP_CONF_DIR): HA nameservices for the failover tests. -->
+<configuration>
+  <property><name>dfs.nameservices</name><value>testcluster,deadcluster</value></property>
+  <!-- the first NameNode is a fake standby (test/scripts/standby_namenode.py), the second the real one -->
+  <property><name>dfs.ha.namenodes.testcluster</name><value>nn1,nn2</value></property>
+  <property><name>dfs.namenode.http-address.testcluster.nn1</name><value>localhost:19999</value></property>
+  <property><name>dfs.namenode.http-address.testcluster.nn2</name><value>localhost:9870</value></property>
+  <!-- nothing listens on these -->
+  <property><name>dfs.ha.namenodes.deadcluster</name><value>nn1,nn2</value></property>
+  <property><name>dfs.namenode.http-address.deadcluster.nn1</name><value>localhost:1</value></property>
+  <property><name>dfs.namenode.http-address.deadcluster.nn2</name><value>localhost:2</value></property>
+</configuration>

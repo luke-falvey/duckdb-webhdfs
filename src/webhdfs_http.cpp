@@ -1,13 +1,29 @@
 #include "webhdfs_http.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
 namespace duckdb {
 
+//! httpfs names its providers "HTTPFS", "HTTPFS-Curl", ... Other providers (core's built-in httplib client, used
+//! for extension installs) lack httpfs's settings, proxies and `http` secrets, so they don't count.
+static bool IsHttpfsProvider(const HTTPUtil &util) {
+	return StringUtil::StartsWith(StringUtil::Upper(util.GetName()), "HTTPFS");
+}
+
 static bool HasHttpProvider(DatabaseInstance &db) {
-	return HTTPUtil::Get(db).GetName() != "none";
+	return IsHttpfsProvider(HTTPUtil::Get(db));
+}
+
+//! Load httpfs as the autoload settings allow: a copy that is already available (installed, or linked into this
+//! binary) first, so an offline machine never fails on the install step, then install-and-load.
+static void TryLoadHttpfsExtension(DatabaseInstance &db) noexcept {
+	if (ExtensionHelper::TryAutoLoadAvailableExtension(db, "httpfs")) {
+		return;
+	}
+	ExtensionHelper::TryAutoLoadExtension(db, "httpfs");
 }
 
 void WebHdfsHttp::TryLoadHttpfs(DatabaseInstance &db) noexcept {
@@ -15,17 +31,17 @@ void WebHdfsHttp::TryLoadHttpfs(DatabaseInstance &db) noexcept {
 		if (HasHttpProvider(db)) {
 			return;
 		}
-		ExtensionHelper::TryAutoLoadExtension(db, "httpfs");
+		TryLoadHttpfsExtension(db);
 	} catch (...) { // NOLINT: loading httpfs here is best-effort; GetHttpUtil reports the failure
 	}
 }
 
 HTTPUtil &WebHdfsHttp::GetHttpUtil(DatabaseInstance &db) {
 	if (!HasHttpProvider(db)) {
-		ExtensionHelper::TryAutoLoadExtension(db, "httpfs");
+		TryLoadHttpfsExtension(db);
 	}
 	auto &util = HTTPUtil::Get(db);
-	if (util.GetName() == "none") {
+	if (!IsHttpfsProvider(util)) {
 		throw MissingExtensionException(
 		    "webhdfs requires the httpfs extension for HTTP requests: INSTALL httpfs; LOAD httpfs;");
 	}

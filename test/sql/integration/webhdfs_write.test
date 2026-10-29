@@ -1,0 +1,153 @@
+# name: test/sql/integration/webhdfs_write.test
+# description: writing files over WebHDFS
+# group: [webhdfs]
+
+require webhdfs
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+# start from an empty directory (OVERWRITE replaces its contents)
+statement ok
+COPY (SELECT 1 AS x, 1 AS y) TO 'webhdfs://localhost:9870/test/out/write_test' (FORMAT csv, PARTITION_BY (x), OVERWRITE);
+
+statement ok
+COPY (SELECT range AS id, 'row ' || range AS label FROM range(1000)) TO 'webhdfs://localhost:9870/test/out/write_test/simple.csv';
+
+query IIT
+SELECT count(*), sum(id), min(label) FROM read_csv('webhdfs://localhost:9870/test/out/write_test/simple.csv');
+----
+1000	499500	row 0
+
+query IT
+SELECT size > 0, type FROM webhdfs_stat('webhdfs://localhost:9870/test/out/write_test/simple.csv');
+----
+true	file
+
+statement ok
+COPY (SELECT range AS id FROM range(10)) TO 'webhdfs://localhost:9870/test/out/write_test/data.parquet';
+
+query I
+SELECT sum(id) FROM 'webhdfs://localhost:9870/test/out/write_test/data.parquet';
+----
+45
+
+# overwrite an existing file
+statement ok
+COPY (SELECT range AS id FROM range(3)) TO 'webhdfs://localhost:9870/test/out/write_test/data.parquet';
+
+query I
+SELECT sum(id) FROM 'webhdfs://localhost:9870/test/out/write_test/data.parquet';
+----
+3
+
+# a file larger than the write chunk: one CREATE, then APPENDs
+statement ok
+SET webhdfs_write_chunk_size = 1000000;
+
+statement ok
+SET threads = 1;
+
+statement ok
+COPY (SELECT range AS id, repeat('x', 50) || range AS pad FROM range(600000)) TO 'webhdfs://localhost:9870/test/out/write_test/chunked.csv';
+
+query III
+SELECT count(*), sum(id), count(DISTINCT pad) FROM read_csv('webhdfs://localhost:9870/test/out/write_test/chunked.csv');
+----
+600000	179999700000	600000
+
+statement ok
+RESET threads;
+
+# the same through the HttpFS gateway
+statement ok
+COPY (SELECT range AS id, repeat('x', 50) || range AS pad FROM range(600000)) TO 'webhdfs://localhost:14000/test/out/write_test/gateway.csv';
+
+query II
+SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/out/write_test/gateway.csv');
+----
+600000	179999700000
+
+statement ok
+RESET webhdfs_write_chunk_size;
+
+# partitioned writes, read back as Hive partitions
+statement ok
+COPY (SELECT range % 3 AS part, range AS id FROM range(30)) TO 'webhdfs://localhost:9870/test/out/write_test/parted' (FORMAT parquet, PARTITION_BY (part));
+
+query III
+SELECT part, count(*), sum(id) FROM read_parquet('webhdfs://localhost:9870/test/out/write_test/parted/**/*.parquet', hive_partitioning = true) GROUP BY part ORDER BY part;
+----
+0	10	135
+1	10	145
+2	10	155
+
+query T
+SELECT DISTINCT parse_filename(parse_dirpath(file)) AS dir FROM glob('webhdfs://localhost:9870/test/out/write_test/parted/*/*.parquet') ORDER BY dir;
+----
+part=0
+part=1
+part=2
+
+statement error
+COPY (SELECT 1 AS part, 1 AS id) TO 'webhdfs://localhost:9870/test/out/write_test/parted' (FORMAT parquet, PARTITION_BY (part));
+----
+Directory
+
+statement ok
+COPY (SELECT 9 AS part, 99 AS id) TO 'webhdfs://localhost:9870/test/out/write_test/parted' (FORMAT parquet, PARTITION_BY (part), OVERWRITE_OR_IGNORE);
+
+query I
+SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/out/write_test/parted/**/*.parquet', hive_partitioning = true);
+----
+31
+
+statement ok
+COPY (SELECT 5 AS part, 50 AS id) TO 'webhdfs://localhost:9870/test/out/write_test/parted' (FORMAT parquet, PARTITION_BY (part), OVERWRITE);
+
+query II
+SELECT part, id FROM read_parquet('webhdfs://localhost:9870/test/out/write_test/parted/**/*.parquet', hive_partitioning = true);
+----
+5	50
+
+# writes through a temporary file are renamed into place (replacing the target)
+statement ok
+COPY (SELECT 42 AS answer) TO 'webhdfs://localhost:9870/test/out/write_test/tmp.csv' (USE_TMP_FILE true);
+
+query I
+SELECT answer FROM read_csv('webhdfs://localhost:9870/test/out/write_test/tmp.csv');
+----
+42
+
+statement ok
+COPY (SELECT 43 AS answer) TO 'webhdfs://localhost:9870/test/out/write_test/tmp.csv' (USE_TMP_FILE true);
+
+query I
+SELECT answer FROM read_csv('webhdfs://localhost:9870/test/out/write_test/tmp.csv');
+----
+43
+
+# writing where the user may not
+statement ok
+SET webhdfs_user_name = 'alice';
+
+statement error
+COPY (SELECT 1) TO 'webhdfs://localhost:9870/test/private/nope.csv';
+----
+Permission Error
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+# clean up
+statement ok
+COPY (SELECT 1 AS x, 1 AS y) TO 'webhdfs://localhost:9870/test/out/write_test' (FORMAT csv, PARTITION_BY (x), OVERWRITE);
+

@@ -1,0 +1,33 @@
+# name: test/sql/webhdfs_httpfs_loading.test
+# description: webhdfs loads httpfs (which makes its HTTP requests) only as the autoload settings allow
+# group: [webhdfs]
+
+require webhdfs
+
+# the test runner turns autoloading off, so httpfs is not loaded yet
+statement ok
+SET autoload_known_extensions = false;
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:1/x.csv');
+----
+webhdfs requires the httpfs extension for HTTP requests: INSTALL httpfs; LOAD httpfs;
+
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:1/x.csv');
+----
+webhdfs requires the httpfs extension
+
+# with autoloading allowed, the first request loads httpfs (here: the copy linked into the test binary)
+statement ok
+SET autoload_known_extensions = true;
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:1/x.csv');
+----
+no NameNode could serve the request
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'httpfs';
+----
+true

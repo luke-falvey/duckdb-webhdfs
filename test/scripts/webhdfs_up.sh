@@ -96,4 +96,10 @@ hdfs dfs -rm -r -f -skipTrash /other > /dev/null 2>&1 || true
 hdfs dfs -mkdir -p /other
 hdfs dfs -put /tmp/other.csv /other/data.csv
 '
+# a fake standby NameNode for the failover tests
+STANDBY_PID_FILE="$ROOT/build/webhdfs_standby.pid"
+if [ -f "$STANDBY_PID_FILE" ]; then kill "$(cat "$STANDBY_PID_FILE")" 2>/dev/null || true; fi
+nohup python3 -I "$ROOT/test/scripts/standby_namenode.py" 19999 > /dev/null 2>&1 &
+echo $! > "$STANDBY_PID_FILE"
+
 echo "WebHDFS test clusters are up: webhdfs://localhost:9870 (HttpFS on 14000) and webhdfs://localhost:19870"

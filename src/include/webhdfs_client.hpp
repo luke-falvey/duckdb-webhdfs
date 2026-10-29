@@ -61,6 +61,12 @@ public:
 	//! The NameNode does not issue delegation tokens over HTTP (a gateway): SPNEGO on every request instead
 	std::atomic<bool> spnego_every_request {false};
 
+	//! DataNode redirects of earlier reads, for reads that skip the NameNode. Keys include the identity, the path
+	//! and the file version, so a redirect is only reused by the same user for the same file contents.
+	string GetRedirect(const string &key);
+	void PutRedirect(const string &key, const string &url);
+	void DropRedirect(const string &key, const string &url);
+
 private:
 	mutex lock;
 	vector<string> order;
@@ -72,12 +78,8 @@ private:
 	string secret_name;
 	string kerberos_token;
 	std::chrono::steady_clock::time_point kerberos_token_expiry;
-};
-
-//! A DataNode redirect remembered by an open file, for reads that skip the NameNode.
-struct WebHdfsRedirectCache {
-	mutex lock;
-	string url;
+	static constexpr idx_t MAX_REDIRECTS = 4096;
+	unordered_map<string, string> redirects;
 };
 
 enum class WebHdfsErrorKind : uint8_t {
@@ -130,9 +132,9 @@ public:
 	string GetJsonViaDataNode(const string &op, const string &path,
 	                          const vector<std::pair<string, string>> &params = {});
 
-	//! Read [offset, offset + length) into `buffer` (OPEN). With a cache, the DataNode redirect is reused.
-	void ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,
-	               optional_ptr<WebHdfsRedirectCache> cache);
+	//! Read [offset, offset + length) into `buffer` (OPEN). With a file version (e.g. "<mtime>:<length>"), the
+	//! DataNode redirect of an earlier read of the same file version is reused.
+	void ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer, const string &version = "");
 	//! CREATE a file with `data` (may be empty)
 	void Create(const string &path, const_data_ptr_t data, idx_t len, bool overwrite);
 	//! APPEND `data` to an existing file
@@ -154,6 +156,8 @@ private:
 	string FetchKerberosDelegationToken();
 	vector<std::pair<string, string>> SpnegoHeaders(const string &url);
 	bool CheckBoolean(const string &op, const string &path, const WebHdfsHttpResult &result);
+	//! Who the requests are made as: keeps cached redirects from crossing identities
+	string IdentityKey() const;
 
 private:
 	DatabaseInstance &db;

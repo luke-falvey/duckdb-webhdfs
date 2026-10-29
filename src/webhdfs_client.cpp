@@ -107,6 +107,28 @@ void WebHdfsEndpoint::ClearKerberosToken() {
 	kerberos_token.clear();
 }
 
+string WebHdfsEndpoint::GetRedirect(const string &key) {
+	lock_guard<mutex> guard(lock);
+	auto entry = redirects.find(key);
+	return entry == redirects.end() ? string() : entry->second;
+}
+
+void WebHdfsEndpoint::PutRedirect(const string &key, const string &url) {
+	lock_guard<mutex> guard(lock);
+	if (redirects.size() >= MAX_REDIRECTS) {
+		redirects.clear();
+	}
+	redirects[key] = url;
+}
+
+void WebHdfsEndpoint::DropRedirect(const string &key, const string &url) {
+	lock_guard<mutex> guard(lock);
+	auto entry = redirects.find(key);
+	if (entry != redirects.end() && entry->second == url) {
+		redirects.erase(entry);
+	}
+}
+
 //===--------------------------------------------------------------------===//
 // Errors
 //===--------------------------------------------------------------------===//
@@ -511,8 +533,18 @@ string WebHdfsClient::GetJsonViaDataNode(const string &op, const string &path,
 	return result.body;
 }
 
+string WebHdfsClient::IdentityKey() const {
+	string key = AuthModeToString(config.auth) + "\n" + config.proxy_user + "\n";
+	if (config.auth == WebHdfsAuthMode::SIMPLE) {
+		key += config.user_name;
+	} else if (config.auth == WebHdfsAuthMode::TOKEN) {
+		key += config.delegation_token;
+	}
+	return key;
+}
+
 void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,
-                              optional_ptr<WebHdfsRedirectCache> cache) {
+                              const string &version) {
 	idx_t done = 0;
 	idx_t request_start = 0;
 	WebHdfsBodySink sink;
@@ -528,18 +560,15 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 		return true;
 	};
 	idx_t stalled = 0;
-	bool use_cache = cache && settings.reuse_redirects;
+	bool use_cache = !version.empty() && settings.reuse_redirects;
+	string cache_key = use_cache ? IdentityKey() + "\n" + path + "\n" + version : string();
 	while (done < length) {
 		request_start = done;
 		auto range_params = vector<std::pair<string, string>> {{"offset", std::to_string(offset + done)},
 		                                                       {"length", std::to_string(length - done)}};
 		bool served = false;
 		if (use_cache) {
-			string cached;
-			{
-				lock_guard<mutex> guard(cache->lock);
-				cached = cache->url;
-			}
+			auto cached = endpoint.GetRedirect(cache_key);
 			if (!cached.empty()) {
 				auto result = DataNodeCall(RequestType::GET_REQUEST, webhdfs::ReplaceQueryParams(cached, range_params),
 				                           nullptr, 0, sink);
@@ -548,10 +577,7 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 				} else {
 					// stale redirect (token expired, DataNode gone): go through the NameNode again
 					done = request_start;
-					lock_guard<mutex> guard(cache->lock);
-					if (cache->url == cached) {
-						cache->url.clear();
-					}
+					endpoint.DropRedirect(cache_key, cached);
 				}
 			}
 		}
@@ -568,8 +594,7 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 					ThrowError("OPEN (DataNode)", path, data_result);
 				}
 				if (use_cache) {
-					lock_guard<mutex> guard(cache->lock);
-					cache->url = location;
+					endpoint.PutRedirect(cache_key, location);
 				}
 			} else if (!result.Ok()) {
 				ThrowError("OPEN", path, result);

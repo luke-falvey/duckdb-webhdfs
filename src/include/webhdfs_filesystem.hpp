@@ -32,7 +32,6 @@ public:
 	idx_t position = 0;
 
 	// reading
-	WebHdfsRedirectCache redirect;
 	mutex buffer_lock;
 	vector<data_t> read_buffer;
 	idx_t read_buffer_offset = 0;

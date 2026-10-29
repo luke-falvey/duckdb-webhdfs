@@ -242,7 +242,7 @@ void WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_byte
 	auto out = static_cast<data_ptr_t>(buffer);
 	auto read_ahead = handle.client->Settings().read_buffer_size;
 	if (read_ahead == 0 || bytes >= read_ahead) {
-		handle.client->ReadRange(handle.hdfs_path, location, bytes, out, &handle.redirect);
+		handle.client->ReadRange(handle.hdfs_path, location, bytes, out, GetVersionTag(handle));
 		return;
 	}
 	lock_guard<mutex> guard(handle.buffer_lock);
@@ -253,7 +253,7 @@ void WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_byte
 			handle.read_buffer.resize(fetch);
 		}
 		handle.read_buffer_length = 0;
-		handle.client->ReadRange(handle.hdfs_path, location, fetch, handle.read_buffer.data(), &handle.redirect);
+		handle.client->ReadRange(handle.hdfs_path, location, fetch, handle.read_buffer.data(), GetVersionTag(handle));
 		handle.read_buffer_offset = location;
 		handle.read_buffer_length = fetch;
 	}

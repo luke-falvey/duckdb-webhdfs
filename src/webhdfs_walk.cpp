@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 namespace duckdb {
 
@@ -87,24 +88,40 @@ void WebHdfsWalk::Fetch(const string &path, Listing &listing) {
 	std::exception_ptr error;
 	bool not_found = false;
 	bool permission_denied = false;
-	try {
-		client->ListStatus(path, [&](vector<FileStatus> &page) {
-			for (auto &entry : page) {
-				entries.push_back(std::move(entry));
+	// A big walk makes thousands of requests, and one failure aborts it. httpfs already retries each request; a
+	// listing whose retries all fail (e.g. a NameNode shedding connections under load) gets one more, later try.
+	for (idx_t attempt = 0; attempt < 2; attempt++) {
+		entries.clear();
+		error = nullptr;
+		try {
+			client->ListStatus(path, [&](vector<FileStatus> &page) {
+				for (auto &entry : page) {
+					entries.push_back(std::move(entry));
+				}
+			});
+		} catch (IOException &e) {
+			// a directory that vanished (or a named directory that doesn't exist) is just empty
+			if (StringUtil::Contains(e.what(), "no such file or directory")) {
+				not_found = true;
+			} else {
+				error = std::current_exception();
+				string message = e.what();
+				// nothing listening, or a name that doesn't resolve: waiting won't help
+				bool unreachable = StringUtil::Contains(message, "Couldn't connect") ||
+				                   StringUtil::Contains(message, "Could not resolve") ||
+				                   StringUtil::Contains(message, "Could not establish");
+				if (attempt == 0 && !unreachable) {
+					std::this_thread::sleep_for(std::chrono::seconds(2));
+					continue;
+				}
 			}
-		});
-	} catch (IOException &e) {
-		// a directory that vanished (or a guessed partition that doesn't exist) is just empty
-		if (StringUtil::Contains(e.what(), "no such file or directory")) {
-			not_found = true;
-		} else {
+		} catch (PermissionException &e) {
+			permission_denied = true;
+			error = std::current_exception();
+		} catch (...) {
 			error = std::current_exception();
 		}
-	} catch (PermissionException &e) {
-		permission_denied = true;
-		error = std::current_exception();
-	} catch (...) {
-		error = std::current_exception();
+		break;
 	}
 	lock_guard<mutex> guard(lock);
 	listing.entries = std::move(entries);

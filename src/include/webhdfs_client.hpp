@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 
 namespace duckdb {
 
@@ -67,6 +68,12 @@ public:
 	void PutRedirect(const string &key, const string &url);
 	void DropRedirect(const string &key, const string &url);
 
+	//! Contents of small files read whole (keys as for redirects), so a second open of the same file version
+	//! (DuckDB's readers open a file at bind time and again to scan it) costs no request
+	shared_ptr<const string> GetSmallFile(const string &key);
+	void PutSmallFile(const string &key, shared_ptr<const string> contents);
+	static constexpr idx_t SMALL_FILE_CACHE_BYTES = idx_t(64) << 20;
+
 private:
 	mutex lock;
 	vector<string> order;
@@ -80,6 +87,10 @@ private:
 	std::chrono::steady_clock::time_point kerberos_token_expiry;
 	static constexpr idx_t MAX_REDIRECTS = 4096;
 	unordered_map<string, string> redirects;
+	unordered_map<string, shared_ptr<const string>> small_files;
+	//! insertion order, for evicting the oldest entries first
+	std::deque<string> small_file_order;
+	idx_t small_file_bytes = 0;
 };
 
 enum class WebHdfsErrorKind : uint8_t {
@@ -116,6 +127,8 @@ public:
 	}
 	//! scheme://authority<path>
 	string UrlFor(const string &path) const;
+	//! Key for per-file caches: identity (so cached data never crosses users), path and file version
+	string CacheKey(const string &path, const string &version) const;
 
 	//! GETFILESTATUS; false if the path does not exist
 	bool TryGetFileStatus(const string &path, webhdfs::FileStatus &out);
@@ -156,8 +169,6 @@ private:
 	string FetchKerberosDelegationToken();
 	vector<std::pair<string, string>> SpnegoHeaders(const string &url);
 	bool CheckBoolean(const string &op, const string &path, const WebHdfsHttpResult &result);
-	//! Who the requests are made as: keeps cached redirects from crossing identities
-	string IdentityKey() const;
 
 private:
 	DatabaseInstance &db;

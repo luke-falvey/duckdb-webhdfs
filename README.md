@@ -169,6 +169,9 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
 - Each file read costs one NameNode request (`OPEN`, answered by a redirect to a DataNode); later reads of the same
   file go straight to the DataNode. Files found by a glob or listing are opened without asking for their status
   again.
+- Files up to `webhdfs_read_buffer_size` are fetched in one request and kept in a small cache (64 MiB per cluster,
+  keyed by user, path and modification time), so a reader that opens a file twice (DuckDB's Parquet reader does)
+  reads it once. A read near the end of a larger file fetches its tail, where Parquet keeps its footer.
 - Listings are paged and run in parallel (`webhdfs_list_parallelism`); request counts matter more than bandwidth for
   many small files. See [test/bench](test/bench/README.md) for numbers.
 - DuckDB's external file cache works with WebHDFS files (they carry a modification-time version tag).
@@ -182,7 +185,7 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
   that.
 - Not tested yet: `swebhdfs://` against a TLS cluster, a real Apache Knox (gateway paths and `http` secret headers
   were only checked against a stand-in server), Kerberos with a gateway that authenticates every request instead of
-  issuing tokens, and the loadable extension on macOS and Windows.
+  issuing tokens, and the loadable extension on macOS and Windows (on Linux it is tested in a stock DuckDB 2.0.0).
 - No metadata-changing functions (`SETPERMISSION`, `SETOWNER`, quotas, snapshots).
 
 ## Building
@@ -198,7 +201,9 @@ GEN=ninja make            # needs CMake, a C++17 compiler, and libcurl + OpenSSL
 The CI distribution build gets curl and OpenSSL from vcpkg (`vcpkg.json`). Artifacts:
 
 - `build/release/duckdb`: shell with webhdfs and httpfs linked in
-- `build/release/extension/webhdfs/webhdfs.duckdb_extension`: the loadable extension
+- `build/release/extension/webhdfs/webhdfs.duckdb_extension`: the loadable extension (about 13 MB, almost all of it
+  the parts of DuckDB core it links statically, like every C++ extension; Linux release builds strip its symbol
+  table)
 - `build/release/test/unittest`: the test runner
 
 ## Testing

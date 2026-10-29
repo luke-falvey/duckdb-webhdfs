@@ -248,13 +248,39 @@ void WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_byte
 	lock_guard<mutex> guard(handle.buffer_lock);
 	if (location < handle.read_buffer_offset ||
 	    location + bytes > handle.read_buffer_offset + handle.read_buffer_length) {
-		auto fetch = MinValue<idx_t>(read_ahead, handle.length - location);
+		// Choose the window to fetch. Formats with a footer (Parquet) read the end of a file first and then jump
+		// back, so a small file is fetched whole and a read near the end of a larger one takes the file's tail.
+		idx_t start = location;
+		if (handle.length <= read_ahead) {
+			start = 0;
+		} else if (location + bytes > handle.length - read_ahead) {
+			// the window must still contain the whole read
+			start = MinValue<idx_t>(location, handle.length - read_ahead);
+		}
+		auto fetch = MinValue<idx_t>(read_ahead, handle.length - start);
 		if (handle.read_buffer.size() < fetch) {
 			handle.read_buffer.resize(fetch);
 		}
 		handle.read_buffer_length = 0;
-		handle.client->ReadRange(handle.hdfs_path, location, fetch, handle.read_buffer.data(), GetVersionTag(handle));
-		handle.read_buffer_offset = location;
+		auto whole_file = start == 0 && fetch == handle.length;
+		auto version = GetVersionTag(handle);
+		auto &endpoint = handle.client->Endpoint();
+		shared_ptr<const string> cached;
+		string cache_key;
+		if (whole_file) {
+			cache_key = handle.client->CacheKey(handle.hdfs_path, version);
+			cached = endpoint.GetSmallFile(cache_key);
+		}
+		if (cached && cached->size() == fetch) {
+			memcpy(handle.read_buffer.data(), cached->data(), fetch);
+		} else {
+			handle.client->ReadRange(handle.hdfs_path, start, fetch, handle.read_buffer.data(), version);
+			if (whole_file) {
+				endpoint.PutSmallFile(
+				    cache_key, make_shared_ptr<const string>(const_char_ptr_cast(handle.read_buffer.data()), fetch));
+			}
+		}
+		handle.read_buffer_offset = start;
 		handle.read_buffer_length = fetch;
 	}
 	memcpy(out, handle.read_buffer.data() + (location - handle.read_buffer_offset), bytes);

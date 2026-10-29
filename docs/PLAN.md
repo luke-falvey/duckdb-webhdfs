@@ -695,4 +695,17 @@ implementation differs from this plan:
   an unprivileged MIT KDC on the host rather than in a container.
 - **The no-httpfs test** works in the regular test runner, because the runner
   turns extension autoloading off.
+- **yyjson visibility (§9) is not a risk.** A loadable extension links the parts
+  of DuckDB core it uses (yyjson included) statically, with their symbols
+  hidden. The stripped Linux build loads and runs in a stock DuckDB 2.0.0
+  (Python package) next to a separately built httpfs.
+- **Performance work after the first version.**
+  - Small files (up to the read-ahead size) are fetched whole and cached per
+    cluster (64 MiB), and reads near the end of a file fetch its tail. This
+    halves DataNode requests for Parquet, which opens each file twice.
+  - A failed directory listing in a walk gets one more try after 2 s, unless
+    the NameNode is plainly unreachable.
+  - Linux release builds strip the loadable extension's symbol table (16 MB
+    to 13 MB). The rest is DuckDB core, which every C++ extension links;
+    removing features saves little (the SQL functions are 0.2 MB).
 

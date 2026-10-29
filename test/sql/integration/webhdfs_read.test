@@ -35,6 +35,28 @@ SELECT * FROM 'webhdfs://localhost:9870/test/data/records.json' ORDER BY a;
 1	x
 2	y
 
+# read-ahead windows of every size (they must always contain the requested range); 1300000 > numbers.parquet,
+# so that file is fetched whole, and smaller sizes put window edges inside reads near the footer
+foreach bufsize 1 7 1000 65536 100000 1000000 1300000
+
+statement ok
+SET webhdfs_read_buffer_size = ${bufsize};
+
+query III
+SELECT count(*), sum(id), count(DISTINCT label) FROM 'webhdfs://localhost:9870/test/data/numbers.parquet';
+----
+100000	4999950000	100000
+
+query II
+SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5	10
+
+endloop
+
+statement ok
+RESET webhdfs_read_buffer_size;
+
 # spaces and non-ASCII characters in paths
 query TI
 SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/space dir/ünï cødé.csv');

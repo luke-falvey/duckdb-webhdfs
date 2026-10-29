@@ -121,6 +121,30 @@ void WebHdfsEndpoint::PutRedirect(const string &key, const string &url) {
 	redirects[key] = url;
 }
 
+shared_ptr<const string> WebHdfsEndpoint::GetSmallFile(const string &key) {
+	lock_guard<mutex> guard(lock);
+	auto entry = small_files.find(key);
+	return entry == small_files.end() ? nullptr : entry->second;
+}
+
+void WebHdfsEndpoint::PutSmallFile(const string &key, shared_ptr<const string> contents) {
+	lock_guard<mutex> guard(lock);
+	if (small_files.count(key) || contents->size() > SMALL_FILE_CACHE_BYTES) {
+		return;
+	}
+	while (small_file_bytes + contents->size() > SMALL_FILE_CACHE_BYTES && !small_file_order.empty()) {
+		auto oldest = small_files.find(small_file_order.front());
+		if (oldest != small_files.end()) {
+			small_file_bytes -= oldest->second->size();
+			small_files.erase(oldest);
+		}
+		small_file_order.pop_front();
+	}
+	small_file_bytes += contents->size();
+	small_file_order.push_back(key);
+	small_files.emplace(key, std::move(contents));
+}
+
 void WebHdfsEndpoint::DropRedirect(const string &key, const string &url) {
 	lock_guard<mutex> guard(lock);
 	auto entry = redirects.find(key);
@@ -534,14 +558,14 @@ string WebHdfsClient::GetJsonViaDataNode(const string &op, const string &path,
 	return result.body;
 }
 
-string WebHdfsClient::IdentityKey() const {
+string WebHdfsClient::CacheKey(const string &path, const string &version) const {
 	string key = AuthModeToString(config.auth) + "\n" + config.proxy_user + "\n";
 	if (config.auth == WebHdfsAuthMode::SIMPLE) {
 		key += config.user_name;
 	} else if (config.auth == WebHdfsAuthMode::TOKEN) {
 		key += config.delegation_token;
 	}
-	return key;
+	return key + "\n" + path + "\n" + version;
 }
 
 void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,
@@ -562,7 +586,7 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 	};
 	idx_t stalled = 0;
 	bool use_cache = !version.empty() && settings.reuse_redirects;
-	string cache_key = use_cache ? IdentityKey() + "\n" + path + "\n" + version : string();
+	string cache_key = use_cache ? CacheKey(path, version) : string();
 	while (done < length) {
 		request_start = done;
 		auto range_params = vector<std::pair<string, string>> {{"offset", std::to_string(offset + done)},

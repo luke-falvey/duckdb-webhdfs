@@ -41,8 +41,9 @@ if(NOT WIN32)
   target_link_libraries(${LOADABLE_EXTENSION_NAME} ${CMAKE_DL_LIBS})
 endif()
 
-# Most of the loadable extension is the part of DuckDB core it links statically. Its static symbol table adds about a
-# fifth to the file and isn't needed to load or run it, so release builds on Linux drop it (the dynamic symbols that
+# Most of the loadable extension is the part of DuckDB core it links statically.
+# Its static symbol table adds about a fifth to the file and isn't needed to
+# load or run it, so release builds on Linux drop it (the dynamic symbols that
 # loading uses are kept).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
   target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -s)

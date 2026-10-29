@@ -126,6 +126,9 @@ public:
 	bool Rename(const string &source, const string &destination);
 	//! Any NameNode GET operation; returns the JSON body
 	string GetJson(const string &op, const string &path, const vector<std::pair<string, string>> &params = {});
+	//! A GET operation the NameNode answers by redirecting to a DataNode (GETFILECHECKSUM)
+	string GetJsonViaDataNode(const string &op, const string &path,
+	                          const vector<std::pair<string, string>> &params = {});
 
 	//! Read [offset, offset + length) into `buffer` (OPEN). With a cache, the DataNode redirect is reused.
 	void ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,

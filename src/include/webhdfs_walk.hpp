@@ -1,7 +1,8 @@
 #pragma once
 
 // A glob walk over a WebHDFS tree. Entries come out in a stable depth-first order (children sorted by name), while
-// up to `parallelism` directory listings are fetched ahead of the walk on worker threads.
+// up to `parallelism` directory listings are fetched ahead of the walk on worker threads. Directories the pattern
+// spells out (e.g. `month={5,6}` in `.../year=2024/month={5,6}/*.parquet`) are visited without listing their parent.
 
 #include "duckdb.hpp"
 #include "duckdb/common/mutex.hpp"
@@ -19,19 +20,6 @@ struct WebHdfsWalkEntry {
 	webhdfs::FileStatus status;
 };
 
-//! Prunes Hive partition directories during a walk. Paths are absolute HDFS paths.
-class WebHdfsWalkPruner {
-public:
-	virtual ~WebHdfsWalkPruner() = default;
-	//! False if no file below `dir_path` can pass the filters (judged from its key=value components)
-	virtual bool KeepDirectory(const string &dir_path) = 0;
-	//! False if the file can't pass the filters
-	virtual bool KeepFile(const string &file_path) = 0;
-	//! The only directory names ("value" in key=value, Hive-escaped) that can pass the filters for `key`, or false
-	//! if the filters don't pin `key` to a list of values
-	virtual bool CandidateValues(const string &key, vector<string> &values) = 0;
-};
-
 struct WebHdfsWalkOptions {
 	bool include_hidden = false;
 	bool skip_permission_errors = false;
@@ -41,16 +29,16 @@ struct WebHdfsWalkOptions {
 };
 
 struct WebHdfsWalkStats {
+	//! Directories listed
 	idx_t listings = 0;
+	//! Directories visited by name without listing their parent
 	idx_t probes = 0;
-	idx_t pruned_directories = 0;
 };
 
 class WebHdfsWalk {
 public:
 	//! `pattern` is the HDFS path (may contain wildcards)
-	WebHdfsWalk(shared_ptr<WebHdfsClient> client, const string &pattern, WebHdfsWalkOptions options,
-	            shared_ptr<WebHdfsWalkPruner> pruner = nullptr);
+	WebHdfsWalk(shared_ptr<WebHdfsClient> client, const string &pattern, WebHdfsWalkOptions options);
 	~WebHdfsWalk();
 
 	//! Append up to `max_entries` entries to `out`. Returns false when the walk is exhausted and nothing was added.
@@ -74,7 +62,7 @@ private:
 		bool emit = false;
 		WebHdfsWalkEntry entry;
 		std::vector<webhdfs::GlobState> states;
-		//! a guessed partition directory that may not exist
+		//! the listing was replaced by the directory names the pattern spells out
 		bool probe = false;
 		bool is_root = false;
 		shared_ptr<Listing> listing;
@@ -85,14 +73,13 @@ private:
 	void Fetch(const string &path, Listing &listing);
 	//! Expand a directory item whose listing is complete; pushes child items. Called with `lock` held.
 	void Expand(Item &item);
-	//! Try to replace the listing of `item` by guessed partition directories; returns true if it did.
-	bool TryPartitionShortcut(Item &item);
+	//! When the pattern names the children of `item` literally, replace its listing with those names
+	bool TryLiteralShortcut(Item &item);
 
 private:
 	shared_ptr<WebHdfsClient> client;
 	webhdfs::GlobPattern pattern;
 	WebHdfsWalkOptions options;
-	shared_ptr<WebHdfsWalkPruner> pruner;
 
 	mutex lock;
 	std::condition_variable cv;

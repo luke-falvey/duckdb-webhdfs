@@ -18,7 +18,6 @@ struct WebHdfsSettings {
 	static constexpr const char *WRITE_CHUNK_SIZE = "webhdfs_write_chunk_size";
 	static constexpr const char *REUSE_REDIRECTS = "webhdfs_reuse_redirects";
 	static constexpr const char *USER_NAME = "webhdfs_user_name";
-	static constexpr const char *PARTITION_PRUNING = "webhdfs_partition_pruning";
 
 	static constexpr idx_t DEFAULT_LIST_PARALLELISM = 16;
 	static constexpr idx_t DEFAULT_READ_BUFFER_SIZE = 1024 * 1024;
@@ -31,7 +30,6 @@ struct WebHdfsSettings {
 	idx_t write_chunk_size = DEFAULT_WRITE_CHUNK_SIZE;
 	bool reuse_redirects = true;
 	string user_name;
-	bool partition_pruning = true;
 
 	//! Current values (session settings through the opener, else global settings of `db`)
 	static WebHdfsSettings Load(optional_ptr<DatabaseInstance> db, optional_ptr<FileOpener> opener);

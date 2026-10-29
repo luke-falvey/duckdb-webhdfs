@@ -5,6 +5,7 @@
 #include "duckdb/main/database.hpp"
 #include "webhdfs_config.hpp"
 #include "webhdfs_filesystem.hpp"
+#include "webhdfs_functions.hpp"
 #include "webhdfs_http.hpp"
 #include "webhdfs_secret.hpp"
 
@@ -20,8 +21,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	WebHdfsSettings::Register(db);
 	RegisterWebHdfsSecretType(loader);
 
-	auto &fs = db.GetFileSystem();
-	fs.RegisterSubSystem(make_uniq<WebHdfsFileSystem>(db));
+	auto webhdfs_fs = make_uniq<WebHdfsFileSystem>(db);
+	// the virtual file system owns the filesystem for the database's lifetime; the functions borrow it
+	auto &fs_ref = *webhdfs_fs;
+	db.GetFileSystem().RegisterSubSystem(std::move(webhdfs_fs));
+	RegisterWebHdfsFunctions(loader, fs_ref);
 }
 
 void WebhdfsExtension::Load(ExtensionLoader &loader) {

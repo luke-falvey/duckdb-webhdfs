@@ -59,9 +59,6 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
-	if (TryGetSetting(db, opener, PARTITION_PRUNING, value)) {
-		settings.partition_pruning = value.GetValue<bool>();
-	}
 	return settings;
 }
 
@@ -95,10 +92,6 @@ void WebHdfsSettings::Register(DatabaseInstance &db) {
 	                          "User name for WebHDFS simple authentication when no webhdfs secret sets one (default: "
 	                          "HADOOP_USER_NAME, else the OS user)",
 	                          LogicalType::VARCHAR, Value());
-	config.AddExtensionOption(PARTITION_PRUNING,
-	                          "Skip Hive partition directories that the query's filters exclude while listing "
-	                          "WebHDFS globs (applies when hive_partitioning = true and hive_types_autocast = false)",
-	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
 }
 
 //===--------------------------------------------------------------------===//

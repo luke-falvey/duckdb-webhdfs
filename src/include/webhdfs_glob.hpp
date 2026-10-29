@@ -70,9 +70,9 @@ public:
 	//! Match one child of a directory that is being walked with `states`.
 	GlobMatch Match(const std::vector<GlobState> &states, const std::string &name, bool is_dir) const;
 
-	//! If every state is at a non-final component of the form `key=<anything>` with a literal key shared by all
-	//! states, return true and the key. Used to try partition directories by name instead of listing the parent.
-	bool PartitionComponentKey(const std::vector<GlobState> &states, std::string &key) const;
+	//! If every state is at a literal, non-final component (e.g. the `{5,6}` in `month={5,6}/*`), return true and
+	//! the distinct names: the walk can visit those directories without listing their parent.
+	bool LiteralChildren(const std::vector<GlobState> &states, std::vector<std::string> &names) const;
 
 private:
 	enum class Kind { LITERAL, PATTERN, RECURSIVE };

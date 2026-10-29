@@ -62,9 +62,6 @@ public:
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
-	//! Walk a pattern (or list a directory) with the session's walk settings
-	unique_ptr<WebHdfsWalk> OpenWalk(const string &url, optional_ptr<FileOpener> opener, WebHdfsWalkOptions options,
-	                                 shared_ptr<WebHdfsWalkPruner> pruner, shared_ptr<WebHdfsClient> &client_out);
 	DatabaseInstance &GetDatabase() {
 		return db;
 	}
@@ -131,6 +128,12 @@ protected:
 	bool ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
 	                       optional_ptr<FileOpener> opener) override;
 	bool SupportsListFilesExtended() const override {
+		return true;
+	}
+	//! A lazily expanded list: readers can start on the first files while the walk continues
+	unique_ptr<MultiFileList> GlobFilesExtended(const string &path, const FileGlobInput &input,
+	                                            optional_ptr<FileOpener> opener) override;
+	bool SupportsGlobExtended() const override {
 		return true;
 	}
 

@@ -21,7 +21,9 @@ set(EXTENSION_SOURCES
     src/webhdfs_client.cpp
     src/webhdfs_config.cpp
     src/webhdfs_extension.cpp
+    src/webhdfs_file_list.cpp
     src/webhdfs_filesystem.cpp
+    src/webhdfs_functions.cpp
     src/webhdfs_glob.cpp
     src/webhdfs_hadoop_config.cpp
     src/webhdfs_http.cpp

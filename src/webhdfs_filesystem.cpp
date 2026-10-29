@@ -4,6 +4,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "webhdfs_glob.hpp"
+#include "webhdfs_file_list.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -140,14 +141,6 @@ shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, opt
 	auto config = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), settings);
 	auto &endpoint = GetEndpoint(parsed.Prefix());
 	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint);
-}
-
-unique_ptr<WebHdfsWalk> WebHdfsFileSystem::OpenWalk(const string &url, optional_ptr<FileOpener> opener,
-                                                    WebHdfsWalkOptions options, shared_ptr<WebHdfsWalkPruner> pruner,
-                                                    shared_ptr<WebHdfsClient> &client_out) {
-	WebHdfsUrl parsed;
-	client_out = CreateClient(url, opener, parsed);
-	return make_uniq<WebHdfsWalk>(client_out, parsed.path, options, std::move(pruner));
 }
 
 bool WebHdfsFileSystem::CanHandleFile(const string &fpath) {
@@ -523,6 +516,12 @@ vector<OpenFileInfo> WebHdfsFileSystem::Glob(const string &path, FileOpener *ope
 	}
 	std::sort(result.begin(), result.end());
 	return result;
+}
+
+unique_ptr<MultiFileList> WebHdfsFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
+                                                               optional_ptr<FileOpener> opener) {
+	vector<string> globs {path};
+	return make_uniq<WebHdfsFileList>(*this, FileOpener::TryGetClientContext(opener), opener, std::move(globs));
 }
 
 } // namespace duckdb

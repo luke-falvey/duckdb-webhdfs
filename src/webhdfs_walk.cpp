@@ -10,9 +10,8 @@ using webhdfs::FileStatus;
 
 static constexpr idx_t PREFETCH_WINDOW_PER_THREAD = 4;
 
-WebHdfsWalk::WebHdfsWalk(shared_ptr<WebHdfsClient> client_p, const string &path_pattern, WebHdfsWalkOptions options_p,
-                         shared_ptr<WebHdfsWalkPruner> pruner_p)
-    : client(std::move(client_p)), options(options_p), pruner(std::move(pruner_p)) {
+WebHdfsWalk::WebHdfsWalk(shared_ptr<WebHdfsClient> client_p, const string &path_pattern, WebHdfsWalkOptions options_p)
+    : client(std::move(client_p)), options(options_p) {
 	try {
 		pattern = webhdfs::GlobPattern::Compile(path_pattern, options.include_hidden);
 	} catch (webhdfs::GlobError &e) {
@@ -127,8 +126,8 @@ void WebHdfsWalk::WorkerLoop() {
 		for (idx_t i = 0; i < window; i++) {
 			auto &item = stack[stack.size() - 1 - i];
 			if (!item.emit && item.listing && !item.listing->started) {
-				if (TryPartitionShortcut(item)) {
-					// replaced by guessed partition directories: nothing to fetch for this one
+				if (TryLiteralShortcut(item)) {
+					// replaced by the directory names the pattern spells out: nothing to fetch
 					rescan = true;
 					break;
 				}
@@ -153,28 +152,22 @@ void WebHdfsWalk::WorkerLoop() {
 	}
 }
 
-bool WebHdfsWalk::TryPartitionShortcut(Item &item) {
-	if (!pruner || item.states.empty()) {
+bool WebHdfsWalk::TryLiteralShortcut(Item &item) {
+	if (item.states.empty()) {
 		return false;
 	}
-	string key;
-	if (!pattern.PartitionComponentKey(item.states, key)) {
+	std::vector<string> names;
+	if (!pattern.LiteralChildren(item.states, names)) {
 		return false;
 	}
-	vector<string> values;
-	if (!pruner->CandidateValues(key, values)) {
-		return false;
-	}
-	// Mark the listing as done with synthesized directory entries; they are probed when walked.
+	// The listing becomes the named directories; each is listed (or found missing) when it is walked.
 	item.listing->started = true;
 	item.listing->done = true;
 	item.probe = true;
 	item.listing->entries.clear();
-	std::sort(values.begin(), values.end());
-	values.erase(std::unique(values.begin(), values.end()), values.end());
-	for (auto &value : values) {
+	for (auto &name : names) {
 		FileStatus status;
-		status.path_suffix = key + "=" + value;
+		status.path_suffix = name;
 		status.is_dir = true;
 		item.listing->entries.push_back(std::move(status));
 	}
@@ -184,7 +177,7 @@ bool WebHdfsWalk::TryPartitionShortcut(Item &item) {
 void WebHdfsWalk::Expand(Item &item) {
 	auto &listing = *item.listing;
 	if (listing.not_found) {
-		// globbing below a missing directory (or a guessed partition that doesn't exist) matches nothing
+		// globbing below a missing directory (or a named directory that doesn't exist) matches nothing
 		return;
 	}
 	if (listing.error) {
@@ -218,25 +211,18 @@ void WebHdfsWalk::Expand(Item &item) {
 			match = pattern.Match(item.states, status.path_suffix, status.is_dir);
 		}
 		if (status.is_dir && !match.next.empty()) {
-			if (pruner && !pruner->KeepDirectory(child_path)) {
-				stats.pruned_directories++;
-			} else {
-				Item child;
-				child.entry.path = child_path;
-				child.entry.status = status;
-				child.states = std::move(match.next);
-				child.listing = make_shared_ptr<Listing>();
-				if (synthesized) {
-					stats.probes++;
-				}
-				stack.push_back(std::move(child));
+			Item child;
+			child.entry.path = child_path;
+			child.entry.status = status;
+			child.states = std::move(match.next);
+			child.listing = make_shared_ptr<Listing>();
+			if (synthesized) {
+				stats.probes++;
 			}
+			stack.push_back(std::move(child));
 		}
 		if (match.emit && !synthesized) {
 			if (status.is_dir && options.files_only) {
-				continue;
-			}
-			if (!status.is_dir && pruner && !pruner->KeepFile(child_path)) {
 				continue;
 			}
 			Item emit;
@@ -270,8 +256,8 @@ bool WebHdfsWalk::Next(vector<WebHdfsWalkEntry> &out, idx_t max_entries) {
 		}
 		auto listing = top.listing;
 		if (!listing->started) {
-			// may replace the listing by guessed partition directories
-			TryPartitionShortcut(top);
+			// may replace the listing by the directory names the pattern spells out
+			TryLiteralShortcut(top);
 		}
 		if (!listing->done) {
 			if (added > 0) {

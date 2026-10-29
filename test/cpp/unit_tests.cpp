@@ -237,23 +237,27 @@ TEST(glob_roots) {
 	CHECK_THROWS(GlobPattern::Compile("relative/*", false));
 }
 
-TEST(glob_partition_key) {
-	auto plan = GlobPattern::Compile("/t/year=*/month=*/*.parquet", false);
-	std::string key;
-	CHECK(plan.PartitionComponentKey(plan.Start(), key));
-	CHECK_EQ(key, "year");
-	auto m = plan.Match(plan.Start(), "year=2024", true);
-	CHECK(m.next.size() == 1);
-	CHECK(plan.PartitionComponentKey(m.next, key));
-	CHECK_EQ(key, "month");
-	auto m2 = plan.Match(m.next, "month=1", true);
-	CHECK(!plan.PartitionComponentKey(m2.next, key));
-	plan = GlobPattern::Compile("/t/*/*.parquet", false);
-	CHECK(!plan.PartitionComponentKey(plan.Start(), key));
-	plan = GlobPattern::Compile("/t/**/*.parquet", false);
-	CHECK(!plan.PartitionComponentKey(plan.Start(), key));
-	plan = GlobPattern::Compile("/t/{year=*,month=*}/x/*", false);
-	CHECK(!plan.PartitionComponentKey(plan.Start(), key));
+TEST(glob_literal_children) {
+	auto plan = GlobPattern::Compile("/t/year=2024/month={5,6}/*.parquet", false);
+	CHECK_EQ(plan.Root(), "/t/year=2024");
+	std::vector<std::string> names;
+	CHECK(plan.LiteralChildren(plan.Start(), names));
+	CHECK_EQ(names.size(), 2u);
+	CHECK_EQ(names[0], "month=5");
+	CHECK_EQ(names[1], "month=6");
+	auto m = plan.Match(plan.Start(), "month=5", true);
+	CHECK(!plan.LiteralChildren(m.next, names));
+	plan = GlobPattern::Compile("/t/{a,b}/c/*", false);
+	CHECK(plan.LiteralChildren(plan.Start(), names));
+	m = plan.Match(plan.Start(), "a", true);
+	CHECK(plan.LiteralChildren(m.next, names));
+	CHECK_EQ(names[0], "c");
+	plan = GlobPattern::Compile("/t/{a,b}", false);
+	CHECK(!plan.LiteralChildren(plan.Start(), names));
+	plan = GlobPattern::Compile("/t/*/x", false);
+	CHECK(!plan.LiteralChildren(plan.Start(), names));
+	plan = GlobPattern::Compile("/t/{a,*}/x", false);
+	CHECK(!plan.LiteralChildren(plan.Start(), names));
 }
 
 //===--------------------------------------------------------------------===//

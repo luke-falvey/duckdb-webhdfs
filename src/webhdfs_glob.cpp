@@ -381,49 +381,23 @@ GlobMatch GlobPattern::Match(const std::vector<GlobState> &states, const std::st
 	return result;
 }
 
-bool GlobPattern::PartitionComponentKey(const std::vector<GlobState> &states, std::string &key) const {
-	if (states.empty()) {
-		return false;
-	}
-	std::string found;
+bool GlobPattern::LiteralChildren(const std::vector<GlobState> &states, std::vector<std::string> &names) const {
+	names.clear();
 	for (auto &state : states) {
 		auto &components = alternatives[state.alternative];
 		if (state.component + 1 >= components.size()) {
-			// last component (or past it): candidates could be files, so names can't be guessed
+			// a final component would need each match's metadata, which a listing provides anyway
 			return false;
 		}
 		auto &component = components[state.component];
-		if (component.kind == Kind::RECURSIVE) {
+		if (component.kind != Kind::LITERAL) {
 			return false;
 		}
-		std::string raw = component.text;
-		size_t eq = std::string::npos;
-		for (size_t i = 0; i < raw.size(); i++) {
-			if (raw[i] == '\\') {
-				i++;
-				continue;
-			}
-			if (raw[i] == '=') {
-				eq = i;
-				break;
-			}
-		}
-		if (eq == std::string::npos || eq == 0) {
-			return false;
-		}
-		auto prefix = raw.substr(0, eq);
-		if (component.kind == Kind::PATTERN && HasUnescaped(prefix, "*?[")) {
-			return false;
-		}
-		auto this_key = component.kind == Kind::PATTERN ? UnescapeGlob(prefix) : prefix;
-		if (found.empty()) {
-			found = this_key;
-		} else if (found != this_key) {
-			return false;
-		}
+		names.push_back(component.text);
 	}
-	key = found;
-	return true;
+	std::sort(names.begin(), names.end());
+	names.erase(std::unique(names.begin(), names.end()), names.end());
+	return !names.empty();
 }
 
 } // namespace webhdfs

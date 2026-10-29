@@ -493,6 +493,25 @@ string WebHdfsClient::GetJson(const string &op, const string &path, const vector
 	return result.body;
 }
 
+string WebHdfsClient::GetJsonViaDataNode(const string &op, const string &path,
+                                         const vector<std::pair<string, string>> &query) {
+	auto result = NameNodeCall(RequestType::GET_REQUEST, op, path, query);
+	if (result.IsRedirect()) {
+		if (result.location.empty()) {
+			throw IOException("WebHDFS %s on \"%s\": redirect without a Location header", op, UrlFor(path));
+		}
+		auto data_result = DataNodeCall(RequestType::GET_REQUEST, config.MapDataNodeUrl(result.location), nullptr, 0);
+		if (!data_result.Ok()) {
+			ThrowError(op + " (DataNode)", path, data_result);
+		}
+		return data_result.body;
+	}
+	if (!result.Ok()) {
+		ThrowError(op, path, result);
+	}
+	return result.body;
+}
+
 void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,
                               optional_ptr<WebHdfsRedirectCache> cache) {
 	idx_t done = 0;

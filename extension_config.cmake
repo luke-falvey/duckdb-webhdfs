@@ -1,9 +1,19 @@
-# This file is included by DuckDB's build system. It specifies which extension to load
+# This file is included by DuckDB's build system. It specifies which extensions to build.
 
-# Extension from this repo
-duckdb_extension_load(waddle
+# This repo's extension.
+duckdb_extension_load(webhdfs
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
+    LOAD_TESTS
 )
+duckdb_extension_statically_link(webhdfs)
 
-# Any extra extensions that should be built
-# e.g.: duckdb_extension_load(json)
+# httpfs supplies every HTTP request webhdfs makes, at runtime, through DuckDB's
+# HTTPUtil interface. webhdfs never links it. It is built here only so the test
+# runner and the bundled shell have it; the commit is the one DuckDB v2.0.0 pins
+# (duckdb/.github/config/extensions/httpfs.cmake).
+duckdb_extension_load(httpfs
+    GIT_URL https://github.com/duckdb/duckdb-httpfs
+    GIT_TAG 77392a72077a85897db2519fae11e2c0da972b8a
+    INCLUDE_DIR src/include
+)
+duckdb_extension_statically_link(httpfs)

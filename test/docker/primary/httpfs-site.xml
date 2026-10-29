@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>httpfs.http.port</name><value>14000</value></property>
+  <property><name>httpfs.proxyuser.hadoop.hosts</name><value>*</value></property>
+  <property><name>httpfs.proxyuser.hadoop.groups</name><value>*</value></property>
+</configuration>

@@ -131,9 +131,8 @@ WebHdfsErrorKind ClassifyWebHdfsError(const WebHdfsHttpResult &result, RemoteExc
 	if (name == "FileNotFoundException" || Contains(java, "FileNotFoundException")) {
 		return WebHdfsErrorKind::NOT_FOUND;
 	}
-	if (Contains(java, "InvalidToken") || name == "InvalidToken" || Contains(message, "token") &&
-	                                                                       (Contains(message, "expired") ||
-	                                                                        Contains(message, "can't be found"))) {
+	if (Contains(java, "InvalidToken") || name == "InvalidToken" ||
+	    Contains(message, "token") && (Contains(message, "expired") || Contains(message, "can't be found"))) {
 		return WebHdfsErrorKind::INVALID_TOKEN;
 	}
 	if (name == "AccessControlException" || name == "SecurityException" || name == "AuthorizationException" ||
@@ -262,10 +261,10 @@ string WebHdfsClient::FetchKerberosDelegationToken() {
 		if (!config.proxy_user.empty()) {
 			query.emplace_back("doas", config.proxy_user);
 		}
-		auto request_url = webhdfs::BuildRestUrl(config.NameNodeBaseUrl(nn), config.gateway_path, "/",
-		                                         "GETDELEGATIONTOKEN", query);
-		auto result = Send(RequestType::GET_REQUEST, request_url, SpnegoHeaders(request_url), nullptr, 0,
-		                   WebHdfsBodySink());
+		auto request_url =
+		    webhdfs::BuildRestUrl(config.NameNodeBaseUrl(nn), config.gateway_path, "/", "GETDELEGATIONTOKEN", query);
+		auto result =
+		    Send(RequestType::GET_REQUEST, request_url, SpnegoHeaders(request_url), nullptr, 0, WebHdfsBodySink());
 		endpoint.RecordRequest(nn);
 		if (result.status == 0) {
 			endpoint.MarkFailed(nn, "unreachable", result.request_error);
@@ -475,9 +474,9 @@ bool WebHdfsClient::Mkdirs(const string &path, const string &permission) {
 }
 
 bool WebHdfsClient::Delete(const string &path, bool recursive) {
-	return CheckBoolean("DELETE", path,
-	                    NameNodeCall(RequestType::DELETE_REQUEST, "DELETE", path,
-	                                 {{"recursive", recursive ? "true" : "false"}}));
+	return CheckBoolean(
+	    "DELETE", path,
+	    NameNodeCall(RequestType::DELETE_REQUEST, "DELETE", path, {{"recursive", recursive ? "true" : "false"}}));
 }
 
 bool WebHdfsClient::Rename(const string &source, const string &destination) {
@@ -533,7 +532,7 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 	while (done < length) {
 		request_start = done;
 		auto range_params = vector<std::pair<string, string>> {{"offset", std::to_string(offset + done)},
-		                                                        {"length", std::to_string(length - done)}};
+		                                                       {"length", std::to_string(length - done)}};
 		bool served = false;
 		if (use_cache) {
 			string cached;
@@ -542,9 +541,8 @@ void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, da
 				cached = cache->url;
 			}
 			if (!cached.empty()) {
-				auto result =
-				    DataNodeCall(RequestType::GET_REQUEST, webhdfs::ReplaceQueryParams(cached, range_params), nullptr,
-				                 0, sink);
+				auto result = DataNodeCall(RequestType::GET_REQUEST, webhdfs::ReplaceQueryParams(cached, range_params),
+				                           nullptr, 0, sink);
 				if (result.Ok()) {
 					served = true;
 				} else {

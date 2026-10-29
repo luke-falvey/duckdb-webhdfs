@@ -1,6 +1,6 @@
 # name: test/sql/webhdfs_httpfs_loading.test
 # description: webhdfs loads httpfs (which makes its HTTP requests) only as the autoload settings allow
-# group: [webhdfs]
+# group: [sql]
 
 require webhdfs
 

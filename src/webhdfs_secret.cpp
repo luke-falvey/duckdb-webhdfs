@@ -5,8 +5,8 @@
 
 namespace duckdb {
 
-static const char *const STRING_OPTIONS[] = {"user_name",  "proxy_user",       "delegation_token", "auth",
-                                              "gateway_path", "kerberos_service", "permission"};
+static const char *const STRING_OPTIONS[] = {"user_name",    "proxy_user",       "delegation_token", "auth",
+                                             "gateway_path", "kerberos_service", "permission"};
 
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	auto scope = input.scope;

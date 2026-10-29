@@ -85,8 +85,9 @@ struct WebHdfsConfig {
 };
 
 //! Resolve the connection configuration for `url`. `site` holds hdfs-site.xml and core-site.xml.
-WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener> opener, const webhdfs::WebHdfsUrl &url,
-                                   const webhdfs::HadoopConfig &site, const WebHdfsSettings &settings);
+WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener> opener,
+                                   const webhdfs::WebHdfsUrl &url, const webhdfs::HadoopConfig &site,
+                                   const WebHdfsSettings &settings);
 
 //! The OS user name (fallback identity for simple authentication)
 string CurrentOsUser();

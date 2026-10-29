@@ -1,6 +1,6 @@
 # name: test/sql/integration/webhdfs_datanode_map.test
 # description: rewriting DataNode redirects
-# group: [webhdfs]
+# group: [integration]
 
 require webhdfs
 

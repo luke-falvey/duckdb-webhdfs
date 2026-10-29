@@ -98,8 +98,7 @@ bool ParseFileStatus(const std::string &body, FileStatus &out, std::string &erro
 //! LISTSTATUS ({"FileStatuses":{"FileStatus":[...]}}) or LISTSTATUS_BATCH
 //! ({"DirectoryListing":{"partialListing":{"FileStatuses":...},"remainingEntries":n}}).
 //! `remaining` is set to the batch's remainingEntries (0 for LISTSTATUS).
-bool ParseFileStatusList(const std::string &body, std::vector<FileStatus> &out, int64_t &remaining,
-                         std::string &error);
+bool ParseFileStatusList(const std::string &body, std::vector<FileStatus> &out, int64_t &remaining, std::string &error);
 //! {"RemoteException":{...}}; false if the body is not one
 bool ParseRemoteException(const std::string &body, RemoteException &out);
 //! {"boolean": true|false}

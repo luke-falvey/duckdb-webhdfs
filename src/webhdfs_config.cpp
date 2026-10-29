@@ -137,8 +137,7 @@ string WebHdfsConfig::MapDataNodeUrl(const string &url) const {
 		if (colon != string::npos) {
 			auto host_entry = datanode_address_map.find(host_port.substr(0, colon));
 			if (host_entry != datanode_address_map.end()) {
-				return url.substr(0, host_start) + host_entry->second + host_port.substr(colon) +
-				       url.substr(host_end);
+				return url.substr(0, host_start) + host_entry->second + host_port.substr(colon) + url.substr(host_end);
 			}
 		}
 		return url;
@@ -190,7 +189,7 @@ static string GetEnv(const char *name) {
 }
 
 static optional_ptr<const KeyValueSecret> LookupSecret(DatabaseInstance &db, optional_ptr<FileOpener> opener,
-                                                      const string &path, SecretMatch &match) {
+                                                       const string &path, SecretMatch &match) {
 	auto context = FileOpener::TryGetClientContext(opener);
 	auto &secret_manager = SecretManager::Get(db);
 	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
@@ -228,8 +227,9 @@ static void ParseAddressList(const Value &value, vector<string> &out) {
 	}
 }
 
-WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener> opener, const webhdfs::WebHdfsUrl &url,
-                                   const webhdfs::HadoopConfig &site, const WebHdfsSettings &settings) {
+WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener> opener,
+                                   const webhdfs::WebHdfsUrl &url, const webhdfs::HadoopConfig &site,
+                                   const WebHdfsSettings &settings) {
 	WebHdfsConfig config;
 	config.scheme = url.scheme;
 	config.authority = url.authority;
@@ -261,8 +261,8 @@ WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener
 		}
 	}
 	if (config.namenodes.empty()) {
-		auto port = url.port != 0 ? url.port
-		                          : (config.use_ssl ? webhdfs::DEFAULT_HTTPS_PORT : webhdfs::DEFAULT_HTTP_PORT);
+		auto port =
+		    url.port != 0 ? url.port : (config.use_ssl ? webhdfs::DEFAULT_HTTPS_PORT : webhdfs::DEFAULT_HTTP_PORT);
 		config.namenodes.push_back(url.host + ":" + std::to_string(port));
 		config.namenode_source = "url";
 	}

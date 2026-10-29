@@ -68,8 +68,7 @@ static std::string StripComments(const std::string &xml) {
 }
 
 // Text of the first <tag>...</tag> inside [begin, end), or false if absent.
-static bool FindElement(const std::string &xml, size_t begin, size_t end, const std::string &tag,
-                        std::string &value) {
+static bool FindElement(const std::string &xml, size_t begin, size_t end, const std::string &tag, std::string &value) {
 	auto open = xml.find("<" + tag, begin);
 	while (open != std::string::npos && open < end) {
 		auto after = open + tag.size() + 1;

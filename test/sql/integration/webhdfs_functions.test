@@ -1,6 +1,6 @@
 # name: test/sql/integration/webhdfs_functions.test
 # description: WebHDFS metadata functions
-# group: [webhdfs]
+# group: [integration]
 
 require webhdfs
 

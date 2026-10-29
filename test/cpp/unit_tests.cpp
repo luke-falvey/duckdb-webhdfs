@@ -78,8 +78,7 @@ TEST(url_query_rewrite_and_redact) {
 	         "http://dn:9864/webhdfs/v1/f?op=OPEN&namenoderpcaddress=nn:8020&delegation=SECRET&offset=100&length=5");
 	CHECK_EQ(RedactUrl(url), "http://dn:9864/webhdfs/v1/f?op=OPEN&namenoderpcaddress=nn:8020&delegation=REDACTED&"
 	                         "offset=0");
-	CHECK_EQ(RedactUrl("http://nn/x?op=X&user.name=bob&doas=al"),
-	         "http://nn/x?op=X&user.name=REDACTED&doas=REDACTED");
+	CHECK_EQ(RedactUrl("http://nn/x?op=X&user.name=bob&doas=al"), "http://nn/x?op=X&user.name=REDACTED&doas=REDACTED");
 	std::string host, rest;
 	CHECK(SplitUrlHost("http://dn:9864/webhdfs/v1/f?op=OPEN", host, rest));
 	CHECK_EQ(host, "http://dn:9864");

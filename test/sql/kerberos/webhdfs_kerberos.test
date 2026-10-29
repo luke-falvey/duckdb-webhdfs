@@ -1,6 +1,6 @@
 # name: test/sql/kerberos/webhdfs_kerberos.test
 # description: SPNEGO authentication against a Kerberos-secured cluster (test/scripts/run_kerberos_tests.sh)
-# group: [webhdfs]
+# group: [kerberos]
 
 require webhdfs
 

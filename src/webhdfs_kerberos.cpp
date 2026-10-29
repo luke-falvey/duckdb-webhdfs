@@ -78,9 +78,9 @@ typedef void *gss_cred_id_t;
 typedef void *gss_channel_bindings_t;
 
 typedef OM_uint32 (*gss_import_name_fn)(OM_uint32 *, gss_buffer_t, gss_OID, gss_name_t *);
-typedef OM_uint32 (*gss_init_sec_context_fn)(OM_uint32 *, gss_cred_id_t, gss_ctx_id_t *, gss_name_t, gss_OID,
-                                             OM_uint32, OM_uint32, gss_channel_bindings_t, gss_buffer_t, gss_OID *,
-                                             gss_buffer_t, OM_uint32 *, OM_uint32 *);
+typedef OM_uint32 (*gss_init_sec_context_fn)(OM_uint32 *, gss_cred_id_t, gss_ctx_id_t *, gss_name_t, gss_OID, OM_uint32,
+                                             OM_uint32, gss_channel_bindings_t, gss_buffer_t, gss_OID *, gss_buffer_t,
+                                             OM_uint32 *, OM_uint32 *);
 typedef OM_uint32 (*gss_release_buffer_fn)(OM_uint32 *, gss_buffer_t);
 typedef OM_uint32 (*gss_release_name_fn)(OM_uint32 *, gss_name_t *);
 typedef OM_uint32 (*gss_delete_sec_context_fn)(OM_uint32 *, gss_ctx_id_t *, gss_buffer_t);

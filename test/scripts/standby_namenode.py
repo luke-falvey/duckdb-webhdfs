@@ -1,16 +1,19 @@
 """A fake NameNode that answers every WebHDFS request the way a standby NameNode does (HTTP 403 with a
 StandbyException), for the failover tests. Usage: python3 standby_namenode.py <port>"""
+
 import http.server
 import json
 import sys
 
-BODY = json.dumps({
-    "RemoteException": {
-        "exception": "StandbyException",
-        "javaClassName": "org.apache.hadoop.ipc.StandbyException",
-        "message": "Operation category READ is not supported in state standby",
+BODY = json.dumps(
+    {
+        "RemoteException": {
+            "exception": "StandbyException",
+            "javaClassName": "org.apache.hadoop.ipc.StandbyException",
+            "message": "Operation category READ is not supported in state standby",
+        }
     }
-}).encode()
+).encode()
 
 
 class StandbyHandler(http.server.BaseHTTPRequestHandler):

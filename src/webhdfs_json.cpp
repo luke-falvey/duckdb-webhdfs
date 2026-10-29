@@ -189,8 +189,8 @@ FileStatus ParseFileStatusObject(JsonValue obj) {
 	status.owner = obj["owner"].GetString();
 	status.group = obj["group"].GetString();
 	auto permission = obj["permission"];
-	status.permission = ParseOctalPermission(permission.IsString() ? permission.GetString()
-	                                                               : std::to_string(permission.GetInt(0)));
+	status.permission =
+	    ParseOctalPermission(permission.IsString() ? permission.GetString() : std::to_string(permission.GetInt(0)));
 	if (!status.is_dir) {
 		status.replication = static_cast<int32_t>(obj["replication"].GetInt(-1));
 		status.block_size = obj["blockSize"].GetInt(-1);

@@ -134,8 +134,7 @@ WebHdfsHttpResult WebHdfsHttp::Get(DatabaseInstance &db, HTTPParams &params, con
 }
 
 WebHdfsHttpResult WebHdfsHttp::Put(DatabaseInstance &db, HTTPParams &params, const string &url,
-                                   const vector<std::pair<string, string>> &headers, const_data_ptr_t data,
-                                   idx_t len) {
+                                   const vector<std::pair<string, string>> &headers, const_data_ptr_t data, idx_t len) {
 	auto &util = GetHttpUtil(db);
 	auto http_headers = MakeHeaders(db, headers);
 	string content_type = "application/octet-stream";

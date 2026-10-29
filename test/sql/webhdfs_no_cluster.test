@@ -1,6 +1,6 @@
 # name: test/sql/webhdfs_no_cluster.test
 # description: webhdfs behaviour that needs no cluster
-# group: [webhdfs]
+# group: [sql]
 
 require webhdfs
 

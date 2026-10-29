@@ -89,15 +89,22 @@ private:
 //===--------------------------------------------------------------------===//
 
 static const vector<std::pair<const char *, LogicalType>> &EntryColumns() {
-	static const vector<std::pair<const char *, LogicalType>> columns = {
-	    {"path", LogicalType::VARCHAR},          {"name", LogicalType::VARCHAR},
-	    {"type", LogicalType::VARCHAR},          {"size", LogicalType::BIGINT},
-	    {"owner", LogicalType::VARCHAR},         {"group", LogicalType::VARCHAR},
-	    {"permissions", LogicalType::VARCHAR},   {"mode", LogicalType::USMALLINT},
-	    {"replication", LogicalType::INTEGER},   {"block_size", LogicalType::BIGINT},
-	    {"last_modified", LogicalType::TIMESTAMP_TZ}, {"last_accessed", LogicalType::TIMESTAMP_TZ},
-	    {"file_id", LogicalType::BIGINT},        {"children_num", LogicalType::BIGINT},
-	    {"storage_policy", LogicalType::INTEGER}, {"ec_policy", LogicalType::VARCHAR}};
+	static const vector<std::pair<const char *, LogicalType>> columns = {{"path", LogicalType::VARCHAR},
+	                                                                     {"name", LogicalType::VARCHAR},
+	                                                                     {"type", LogicalType::VARCHAR},
+	                                                                     {"size", LogicalType::BIGINT},
+	                                                                     {"owner", LogicalType::VARCHAR},
+	                                                                     {"group", LogicalType::VARCHAR},
+	                                                                     {"permissions", LogicalType::VARCHAR},
+	                                                                     {"mode", LogicalType::USMALLINT},
+	                                                                     {"replication", LogicalType::INTEGER},
+	                                                                     {"block_size", LogicalType::BIGINT},
+	                                                                     {"last_modified", LogicalType::TIMESTAMP_TZ},
+	                                                                     {"last_accessed", LogicalType::TIMESTAMP_TZ},
+	                                                                     {"file_id", LogicalType::BIGINT},
+	                                                                     {"children_num", LogicalType::BIGINT},
+	                                                                     {"storage_policy", LogicalType::INTEGER},
+	                                                                     {"ec_policy", LogicalType::VARCHAR}};
 	return columns;
 }
 
@@ -276,10 +283,10 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 		auto blocks = doc->Root()["BlockLocations"]["BlockLocation"];
 		for (idx_t i = 0; i < blocks.Size(); i++) {
 			auto block = blocks.At(i);
-			rows.push_back({Value(url), Value::BIGINT(block["offset"].GetInt()), Value::BIGINT(block["length"].GetInt()),
-			                StringList(block["hosts"]), StringList(block["names"]),
-			                StringList(block["topologyPaths"]), StringList(block["storageTypes"]),
-			                Value::BOOLEAN(block["corrupt"].GetBool())});
+			rows.push_back({Value(url), Value::BIGINT(block["offset"].GetInt()),
+			                Value::BIGINT(block["length"].GetInt()), StringList(block["hosts"]),
+			                StringList(block["names"]), StringList(block["topologyPaths"]),
+			                StringList(block["storageTypes"]), Value::BOOLEAN(block["corrupt"].GetBool())});
 		}
 	} else {
 		auto blocks = doc->Root()["LocatedBlocks"]["locatedBlocks"];
@@ -413,8 +420,7 @@ static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 		auto path = webhdfs::JoinPath(entry["parentFullPath"].GetString("/"), status.path_suffix);
 		rows.push_back({Value(client->UrlFor(path)), Value::INTEGER(entry["snapshotNumber"].GetInt()),
 		                Value::INTEGER(entry["snapshotQuota"].GetInt()), Value(status.owner), Value(status.group),
-		                Value(webhdfs::FormatPermission(status.permission)),
-		                TimestampValue(status.modification_time)});
+		                Value(webhdfs::FormatPermission(status.permission)), TimestampValue(status.modification_time)});
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
 }
@@ -424,16 +430,13 @@ static unique_ptr<RowSource> MakeServerDefaults(MetaCall &call) {
 	auto client = call.Client(parsed);
 	auto doc = ParseJson(client->GetJson("GETSERVERDEFAULTS", "/"), "GETSERVERDEFAULTS");
 	auto defaults = doc->Root()["FsServerDefaults"];
-	return SingleRow({Value(parsed.Prefix()), Value::BIGINT(defaults["blockSize"].GetInt()),
-	                  Value::INTEGER(defaults["bytesPerChecksum"].GetInt()),
-	                  Value::INTEGER(defaults["writePacketSize"].GetInt()),
-	                  Value::INTEGER(defaults["replication"].GetInt()),
-	                  Value::INTEGER(defaults["fileBufferSize"].GetInt()),
-	                  Value::BOOLEAN(defaults["encryptDataTransfer"].GetBool()),
-	                  Value::BIGINT(defaults["trashInterval"].GetInt()),
-	                  Value::INTEGER(defaults["checksumType"].GetInt()),
-	                  OptionalString(defaults["keyProviderUri"].GetString()),
-	                  Value::INTEGER(defaults["defaultStoragePolicyId"].GetInt())});
+	return SingleRow(
+	    {Value(parsed.Prefix()), Value::BIGINT(defaults["blockSize"].GetInt()),
+	     Value::INTEGER(defaults["bytesPerChecksum"].GetInt()), Value::INTEGER(defaults["writePacketSize"].GetInt()),
+	     Value::INTEGER(defaults["replication"].GetInt()), Value::INTEGER(defaults["fileBufferSize"].GetInt()),
+	     Value::BOOLEAN(defaults["encryptDataTransfer"].GetBool()), Value::BIGINT(defaults["trashInterval"].GetInt()),
+	     Value::INTEGER(defaults["checksumType"].GetInt()), OptionalString(defaults["keyProviderUri"].GetString()),
+	     Value::INTEGER(defaults["defaultStoragePolicyId"].GetInt())});
 }
 
 static vector<MetaFunctionDef> &FunctionDefs() {
@@ -699,13 +702,17 @@ struct NameNodesState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> NameNodesBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
-	vector<std::pair<const char *, LogicalType>> columns = {
-	    {"endpoint", LogicalType::VARCHAR},         {"namenode", LogicalType::VARCHAR},
-	    {"state", LogicalType::VARCHAR},            {"active", LogicalType::BOOLEAN},
-	    {"requests", LogicalType::UBIGINT},         {"last_error", LogicalType::VARCHAR},
-	    {"datanode_requests", LogicalType::UBIGINT}, {"auth_mode", LogicalType::VARCHAR},
-	    {"namenode_source", LogicalType::VARCHAR},  {"secret_name", LogicalType::VARCHAR},
-	    {"batched_listing", LogicalType::BOOLEAN}};
+	vector<std::pair<const char *, LogicalType>> columns = {{"endpoint", LogicalType::VARCHAR},
+	                                                        {"namenode", LogicalType::VARCHAR},
+	                                                        {"state", LogicalType::VARCHAR},
+	                                                        {"active", LogicalType::BOOLEAN},
+	                                                        {"requests", LogicalType::UBIGINT},
+	                                                        {"last_error", LogicalType::VARCHAR},
+	                                                        {"datanode_requests", LogicalType::UBIGINT},
+	                                                        {"auth_mode", LogicalType::VARCHAR},
+	                                                        {"namenode_source", LogicalType::VARCHAR},
+	                                                        {"secret_name", LogicalType::VARCHAR},
+	                                                        {"batched_listing", LogicalType::BOOLEAN}};
 	for (auto &column : columns) {
 		names.emplace_back(column.first);
 		return_types.push_back(column.second);
@@ -718,8 +725,8 @@ static unique_ptr<GlobalTableFunctionState> NameNodesInit(ClientContext &context
 	auto state = make_uniq<NameNodesState>();
 	for (auto &snapshot : bind_data.fs.EndpointSnapshots()) {
 		for (auto &nn : snapshot.namenodes) {
-			auto batched = snapshot.batch_listing < 0 ? Value(LogicalType::BOOLEAN)
-			                                          : Value::BOOLEAN(snapshot.batch_listing == 1);
+			auto batched =
+			    snapshot.batch_listing < 0 ? Value(LogicalType::BOOLEAN) : Value::BOOLEAN(snapshot.batch_listing == 1);
 			state->rows.push_back({Value(snapshot.key), Value(nn.first), Value(nn.second.state),
 			                       Value::BOOLEAN(nn.first == snapshot.active), Value::UBIGINT(nn.second.requests),
 			                       OptionalString(nn.second.last_error), Value::UBIGINT(snapshot.datanode_requests),

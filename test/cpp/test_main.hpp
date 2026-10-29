@@ -71,10 +71,10 @@ inline int RunAll() {
 #define UNIT_CONCAT(a, b)  UNIT_CONCAT2(a, b)
 #define TEST(name)                                                                                                     \
 	static void name();                                                                                                \
-	static unit::Register UNIT_CONCAT(register_, name)(#name, name);                                                  \
+	static unit::Register UNIT_CONCAT(register_, name)(#name, name);                                                   \
 	static void name()
-#define CHECK(expr)         unit::Check((expr), #expr, __FILE__, __LINE__)
-#define CHECK_EQ(a, b)      unit::CheckEqual((a), (b), #a " == " #b, __FILE__, __LINE__)
+#define CHECK(expr)    unit::Check((expr), #expr, __FILE__, __LINE__)
+#define CHECK_EQ(a, b) unit::CheckEqual((a), (b), #a " == " #b, __FILE__, __LINE__)
 #define CHECK_THROWS(expr)                                                                                             \
 	do {                                                                                                               \
 		bool threw = false;                                                                                            \
@@ -83,5 +83,5 @@ inline int RunAll() {
 		} catch (...) {                                                                                                \
 			threw = true;                                                                                              \
 		}                                                                                                              \
-		unit::Check(threw, "expected exception: " #expr, __FILE__, __LINE__);                                         \
+		unit::Check(threw, "expected exception: " #expr, __FILE__, __LINE__);                                          \
 	} while (0)

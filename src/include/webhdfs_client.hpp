@@ -97,8 +97,8 @@ WebHdfsErrorKind ClassifyWebHdfsError(const WebHdfsHttpResult &result, webhdfs::
 
 class WebHdfsClient {
 public:
-	WebHdfsClient(DatabaseInstance &db, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url,
-	              WebHdfsConfig config, WebHdfsSettings settings, WebHdfsEndpoint &endpoint);
+	WebHdfsClient(DatabaseInstance &db, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url, WebHdfsConfig config,
+	              WebHdfsSettings settings, WebHdfsEndpoint &endpoint);
 
 	const webhdfs::WebHdfsUrl &Url() const {
 		return url;

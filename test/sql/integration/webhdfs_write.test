@@ -1,6 +1,6 @@
 # name: test/sql/integration/webhdfs_write.test
 # description: writing files over WebHDFS
-# group: [webhdfs]
+# group: [integration]
 
 require webhdfs
 

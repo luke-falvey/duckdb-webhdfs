@@ -1,6 +1,6 @@
 # name: test/sql/integration/webhdfs_clusters.test
 # description: secrets, several clusters, NameNode failover and DataNode address maps
-# group: [webhdfs]
+# group: [integration]
 
 require webhdfs
 

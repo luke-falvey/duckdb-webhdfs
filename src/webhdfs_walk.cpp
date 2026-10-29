@@ -15,8 +15,7 @@ WebHdfsWalk::WebHdfsWalk(shared_ptr<WebHdfsClient> client_p, const string &path_
 	try {
 		pattern = webhdfs::GlobPattern::Compile(path_pattern, options.include_hidden);
 	} catch (webhdfs::GlobError &e) {
-		throw InvalidInputException("Invalid WebHDFS glob pattern \"%s\": %s", client->UrlFor(path_pattern),
-		                            e.what());
+		throw InvalidInputException("Invalid WebHDFS glob pattern \"%s\": %s", client->UrlFor(path_pattern), e.what());
 	}
 }
 

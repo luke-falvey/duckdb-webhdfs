@@ -1,6 +1,6 @@
 # name: test/sql/kerberos/webhdfs_kerberos_no_ticket.test
 # description: a Kerberos-secured cluster without a ticket gives a clear error
-# group: [webhdfs]
+# group: [kerberos]
 
 require webhdfs
 

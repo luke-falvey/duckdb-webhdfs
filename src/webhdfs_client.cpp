@@ -336,7 +336,8 @@ string WebHdfsClient::KerberosDelegationToken() {
 }
 
 WebHdfsHttpResult WebHdfsClient::NameNodeCall(RequestType type, const string &op, const string &path,
-                                              vector<std::pair<string, string>> query, const WebHdfsBodySink &sink) {
+                                              const vector<std::pair<string, string>> &query,
+                                              const WebHdfsBodySink &sink) {
 	auto &namenodes = config.namenodes;
 	auto start = endpoint.PreferredIndex(namenodes);
 	string failures;

@@ -3,6 +3,7 @@
 #include "yyjson.hpp"
 
 #include <cstdlib>
+#include <vector>
 
 using namespace duckdb_yyjson; // NOLINT
 
@@ -131,8 +132,10 @@ std::string JsonValue::ToJson() const {
 }
 
 std::unique_ptr<JsonDocument> JsonDocument::Parse(const std::string &text, std::string &error) {
+	// yyjson_read_opts only writes to its input with YYJSON_READ_INSITU; it takes a mutable buffer anyway
+	std::vector<char> buffer(text.begin(), text.end());
 	yyjson_read_err err;
-	auto doc = yyjson_read_opts(const_cast<char *>(text.data()), text.size(), YYJSON_READ_NOFLAG, nullptr, &err);
+	auto doc = yyjson_read_opts(buffer.data(), buffer.size(), YYJSON_READ_NOFLAG, nullptr, &err);
 	if (!doc) {
 		error = std::string("invalid JSON: ") + (err.msg ? err.msg : "unknown error");
 		return nullptr;

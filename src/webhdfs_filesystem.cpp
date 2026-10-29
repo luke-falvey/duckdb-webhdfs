@@ -20,7 +20,7 @@ using webhdfs::WebHdfsUrl;
 
 WebHdfsFileHandle::WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpenFlags flags,
                                      shared_ptr<WebHdfsClient> client_p, string hdfs_path_p)
-    : FileHandle(fs, path, flags), client(std::move(client_p)), hdfs_path(std::move(hdfs_path_p)) {
+    : FileHandle(fs, path, std::move(flags)), client(std::move(client_p)), hdfs_path(std::move(hdfs_path_p)) {
 }
 
 WebHdfsFileHandle::~WebHdfsFileHandle() {

@@ -20,8 +20,8 @@ struct WebHdfsSettings {
 	static constexpr const char *USER_NAME = "webhdfs_user_name";
 
 	static constexpr idx_t DEFAULT_LIST_PARALLELISM = 16;
-	static constexpr idx_t DEFAULT_READ_BUFFER_SIZE = 1024 * 1024;
-	static constexpr idx_t DEFAULT_WRITE_CHUNK_SIZE = 64 * 1024 * 1024;
+	static constexpr idx_t DEFAULT_READ_BUFFER_SIZE = idx_t(1) << 20;
+	static constexpr idx_t DEFAULT_WRITE_CHUNK_SIZE = idx_t(64) << 20;
 
 	idx_t list_parallelism = DEFAULT_LIST_PARALLELISM;
 	bool include_hidden = false;

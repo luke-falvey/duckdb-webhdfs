@@ -30,6 +30,10 @@ static Value TimestampValue(int64_t epoch_ms) {
 	return Value::TIMESTAMPTZ(timestamp_tz_t(WebHdfsTimestamp(epoch_ms)));
 }
 
+static Value IntegerValue(int64_t value) {
+	return Value::INTEGER(NumericCast<int32_t>(value));
+}
+
 static Value OptionalBigint(int64_t value) {
 	return value < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(value);
 }
@@ -320,7 +324,7 @@ static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 	auto doc = ParseJson(client->GetJsonViaDataNode("GETFILECHECKSUM", parsed.path), "GETFILECHECKSUM");
 	auto checksum = doc->Root()["FileChecksum"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), Value(checksum["algorithm"].GetString()),
-	                  Value(checksum["bytes"].GetString()), Value::INTEGER(checksum["length"].GetInt())});
+	                  Value(checksum["bytes"].GetString()), IntegerValue(checksum["length"].GetInt())});
 }
 
 static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
@@ -386,7 +390,7 @@ static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 	auto client = call.Client(parsed);
 	auto doc = ParseJson(client->GetJson("GETSTORAGEPOLICY", parsed.path), "GETSTORAGEPOLICY");
 	auto policy = doc->Root()["BlockStoragePolicy"];
-	return SingleRow({Value(client->UrlFor(parsed.path)), Value::INTEGER(policy["id"].GetInt()),
+	return SingleRow({Value(client->UrlFor(parsed.path)), IntegerValue(policy["id"].GetInt()),
 	                  Value(policy["name"].GetString()), StringList(policy["storageTypes"]),
 	                  StringList(policy["creationFallbacks"]), StringList(policy["replicationFallbacks"]),
 	                  Value::BOOLEAN(policy["copyOnCreateFile"].GetBool())});
@@ -403,7 +407,7 @@ static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 		auto full_path = snapshot["fullPath"].GetString();
 		auto status = webhdfs::ParseFileStatusObject(snapshot["dirStatus"]);
 		rows.push_back({Value(client->UrlFor(full_path)), Value(webhdfs::BaseName(full_path)),
-		                Value::INTEGER(snapshot["snapshotID"].GetInt()), TimestampValue(status.modification_time)});
+		                IntegerValue(snapshot["snapshotID"].GetInt()), TimestampValue(status.modification_time)});
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
 }
@@ -418,8 +422,8 @@ static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 		auto entry = list.At(i);
 		auto status = webhdfs::ParseFileStatusObject(entry["dirStatus"]);
 		auto path = webhdfs::JoinPath(entry["parentFullPath"].GetString("/"), status.path_suffix);
-		rows.push_back({Value(client->UrlFor(path)), Value::INTEGER(entry["snapshotNumber"].GetInt()),
-		                Value::INTEGER(entry["snapshotQuota"].GetInt()), Value(status.owner), Value(status.group),
+		rows.push_back({Value(client->UrlFor(path)), IntegerValue(entry["snapshotNumber"].GetInt()),
+		                IntegerValue(entry["snapshotQuota"].GetInt()), Value(status.owner), Value(status.group),
 		                Value(webhdfs::FormatPermission(status.permission)), TimestampValue(status.modification_time)});
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
@@ -432,11 +436,11 @@ static unique_ptr<RowSource> MakeServerDefaults(MetaCall &call) {
 	auto defaults = doc->Root()["FsServerDefaults"];
 	return SingleRow(
 	    {Value(parsed.Prefix()), Value::BIGINT(defaults["blockSize"].GetInt()),
-	     Value::INTEGER(defaults["bytesPerChecksum"].GetInt()), Value::INTEGER(defaults["writePacketSize"].GetInt()),
-	     Value::INTEGER(defaults["replication"].GetInt()), Value::INTEGER(defaults["fileBufferSize"].GetInt()),
+	     IntegerValue(defaults["bytesPerChecksum"].GetInt()), IntegerValue(defaults["writePacketSize"].GetInt()),
+	     IntegerValue(defaults["replication"].GetInt()), IntegerValue(defaults["fileBufferSize"].GetInt()),
 	     Value::BOOLEAN(defaults["encryptDataTransfer"].GetBool()), Value::BIGINT(defaults["trashInterval"].GetInt()),
-	     Value::INTEGER(defaults["checksumType"].GetInt()), OptionalString(defaults["keyProviderUri"].GetString()),
-	     Value::INTEGER(defaults["defaultStoragePolicyId"].GetInt())});
+	     IntegerValue(defaults["checksumType"].GetInt()), OptionalString(defaults["keyProviderUri"].GetString()),
+	     IntegerValue(defaults["defaultStoragePolicyId"].GetInt())});
 }
 
 static vector<MetaFunctionDef> &FunctionDefs() {

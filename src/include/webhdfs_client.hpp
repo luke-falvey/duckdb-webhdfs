@@ -145,7 +145,7 @@ public:
 
 private:
 	WebHdfsHttpResult NameNodeCall(RequestType type, const string &op, const string &path,
-	                               vector<std::pair<string, string>> params,
+	                               const vector<std::pair<string, string>> &params,
 	                               const WebHdfsBodySink &sink = WebHdfsBodySink());
 	WebHdfsHttpResult DataNodeCall(RequestType type, const string &url, const_data_ptr_t data, idx_t len,
 	                               const WebHdfsBodySink &sink = WebHdfsBodySink());

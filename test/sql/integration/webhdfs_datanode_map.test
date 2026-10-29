@@ -1,0 +1,43 @@
+# name: test/sql/integration/webhdfs_datanode_map.test
+# description: rewriting DataNode redirects
+# group: [integration]
+
+require webhdfs
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+# a map to a closed port proves the redirect is rewritten
+statement ok
+CREATE SECRET broken_map (TYPE webhdfs, SCOPE 'webhdfs://localhost:9870/test/data/people', USER_NAME 'hadoop', DATANODE_ADDRESS_MAP MAP {'localhost:9864': 'localhost:1'});
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+OPEN (DataNode)
+
+statement ok
+CREATE OR REPLACE SECRET broken_map (TYPE webhdfs, SCOPE 'webhdfs://localhost:9870/test/data/people', USER_NAME 'hadoop', DATANODE_ADDRESS_MAP MAP {'localhost:9864': '127.0.0.1:9864'});
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5
+
+# a host-only entry keeps the port
+statement ok
+CREATE OR REPLACE SECRET broken_map (TYPE webhdfs, SCOPE 'webhdfs://localhost:9870/test/data/people', USER_NAME 'hadoop', DATANODE_ADDRESS_MAP MAP {'localhost': '127.0.0.1'});
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5
+

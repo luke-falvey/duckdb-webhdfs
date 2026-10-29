@@ -1,0 +1,31 @@
+# Two single-node Hadoop clusters for the WebHDFS integration tests.
+# Brought up and seeded by test/scripts/webhdfs_up.sh, removed by test/scripts/webhdfs_down.sh.
+#
+# Each DataNode registers as "localhost" and publishes its HTTP port, so the DataNode redirects the NameNode
+# hands out (http://localhost:9864/...) work from the host.
+services:
+  primary:
+    image: apache/hadoop:3.4.1
+    container_name: webhdfs-test
+    hostname: webhdfs-test
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    environment:
+      WEBHDFS_START_HTTPFS: "1"
+    volumes:
+      - ./primary:/conf:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    ports:
+      - "9870:9870"   # NameNode HTTP (WebHDFS)
+      - "9864:9864"   # DataNode HTTP
+      - "14000:14000" # HttpFS gateway
+  secondary:
+    image: apache/hadoop:3.4.1
+    container_name: webhdfs-test-2
+    hostname: webhdfs-test-2
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    volumes:
+      - ./secondary:/conf:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    ports:
+      - "19870:19870" # NameNode HTTP
+      - "19864:19864" # DataNode HTTP

@@ -1,0 +1,189 @@
+# name: test/sql/integration/webhdfs_functions.test
+# description: WebHDFS metadata functions
+# group: [integration]
+
+require webhdfs
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+query TTITI
+SELECT name, type, CASE WHEN name = 'numbers.parquet' THEN (size = (SELECT size FROM read_blob('build/webhdfs_fixtures/numbers.parquet')))::VARCHAR ELSE size::VARCHAR END, permissions, replication IS NULL FROM webhdfs_ls('webhdfs://localhost:9870/test/data') ORDER BY name;
+----
+numbers.parquet	file	true	rw-r--r--	false
+people.csv	file	53	rw-r--r--	false
+records.json	file	32	rw-r--r--	false
+space dir	directory	0	rwxr-xr-x	true
+sub	directory	0	rwxr-xr-x	true
+
+query I
+SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data', include_hidden := true);
+----
+8
+
+query T
+SELECT path FROM webhdfs_ls('webhdfs://localhost:9870/test/data/people.csv');
+----
+webhdfs://localhost:9870/test/data/people.csv
+
+query TT
+SELECT path, type FROM webhdfs_ls('webhdfs://localhost:9870/test/data/sub/**') ORDER BY path;
+----
+webhdfs://localhost:9870/test/data/sub/deep	directory
+webhdfs://localhost:9870/test/data/sub/deep/deeper.csv	file
+webhdfs://localhost:9870/test/data/sub/nested.csv	file
+
+query I
+SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data/*.nope');
+----
+0
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/missing');
+----
+no such file or directory
+
+query TTITTTIIIII
+SELECT name, type, size, owner, "group", permissions, mode, replication, block_size, children_num IS NULL, last_modified > TIMESTAMPTZ '2020-01-01' FROM webhdfs_stat('webhdfs://localhost:9870/test/data/people.csv');
+----
+people.csv	file	53	hadoop	supergroup	rw-r--r--	420	1	134217728	true	true
+
+query TI
+SELECT type, children_num FROM webhdfs_stat('webhdfs://localhost:9870/test/data/sub');
+----
+directory	2
+
+query I
+SELECT name = '' FROM webhdfs_stat('webhdfs://localhost:9870/');
+----
+true
+
+query III
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/data/people.csv'), webhdfs_exists('webhdfs://localhost:9870/test/data/sub'), webhdfs_exists('webhdfs://localhost:9870/test/data/missing');
+----
+true	true	false
+
+# lateral: one call per row
+query TI
+SELECT l.name, s.size FROM webhdfs_ls('webhdfs://localhost:9870/test/data/sub') l, webhdfs_stat(l.path) s ORDER BY l.name;
+----
+deep	0
+nested.csv	37
+
+query TI
+SELECT p, webhdfs_exists(p) FROM (VALUES ('webhdfs://localhost:9870/test/data/people.csv'), ('webhdfs://localhost:9870/test/data/nope')) t(p) ORDER BY p;
+----
+webhdfs://localhost:9870/test/data/nope	false
+webhdfs://localhost:9870/test/data/people.csv	true
+
+query IIIII
+SELECT length, file_count, directory_count, quota, space_quota FROM webhdfs_content_summary('webhdfs://localhost:9870/test/data/sub');
+----
+65	2	2	NULL	NULL
+
+query IIII
+SELECT file_and_directory_count, quota, space_consumed, space_quota FROM webhdfs_quota_usage('webhdfs://localhost:9870/test/quota');
+----
+2	100	53	1073741824
+
+query IITI
+SELECT "offset", length = (SELECT size FROM read_blob('build/webhdfs_fixtures/numbers.parquet')), hosts, corrupt FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet');
+----
+0	true	[localhost]	false
+
+query I
+SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', "offset" := 0, length := 10);
+----
+1
+
+query II
+SELECT algorithm LIKE 'MD5-of-%', length FROM webhdfs_checksum('webhdfs://localhost:9870/test/data/people.csv');
+----
+true	28
+
+# the same content has the same checksum
+query I
+SELECT a.bytes = b.bytes FROM webhdfs_checksum('webhdfs://localhost:9870/test/data/people.csv') a, webhdfs_checksum('webhdfs://localhost:9870/test/quota/people.csv') b;
+----
+true
+
+query TTII
+SELECT owner, permissions, sticky_bit, list_contains(entries, 'user:alice:r--') FROM webhdfs_acl('webhdfs://localhost:9870/test/data/people.csv');
+----
+hadoop	rw-r--r--	false	true
+
+query TT
+SELECT name, decode(value) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv');
+----
+user.color	blue
+
+query TT
+SELECT name, decode(value) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := ['user.color']);
+----
+user.color	blue
+
+query TT
+SELECT name, storage_types FROM webhdfs_storage_policy('webhdfs://localhost:9870/test');
+----
+HOT	[DISK]
+
+query TT
+SELECT path, name FROM webhdfs_snapshots('webhdfs://localhost:9870/test/snap');
+----
+webhdfs://localhost:9870/test/snap/.snapshot/s1	s1
+
+query TI
+SELECT path, snapshot_count FROM webhdfs_snapshottable_directories('webhdfs://localhost:9870/');
+----
+webhdfs://localhost:9870/test/snap	1
+
+query TII
+SELECT endpoint, replication, block_size FROM webhdfs_server_defaults('webhdfs://localhost:9870/');
+----
+webhdfs://localhost:9870	1	134217728
+
+query TT
+SELECT webhdfs_home_directory('webhdfs://localhost:9870/'), webhdfs_trash_root('webhdfs://localhost:9870/test/data');
+----
+webhdfs://localhost:9870/user/hadoop	webhdfs://localhost:9870/user/hadoop/.Trash
+
+query ITIII
+SELECT active, state, batched_listing, requests > 0, datanode_requests > 0 FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:9870';
+----
+true	active	true	true	true
+
+# permission errors
+statement ok
+SET webhdfs_user_name = 'alice';
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/private');
+----
+Permission Error
+
+statement error
+SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/**');
+----
+Permission Error
+
+query I
+SELECT count(*) > 0 FROM webhdfs_ls('webhdfs://localhost:9870/test/**', skip_permission_errors := true);
+----
+true
+
+statement ok
+SET webhdfs_skip_permission_errors = true;
+
+query I
+SELECT count(*) > 0 FROM glob('webhdfs://localhost:9870/test/**/*.csv');
+----
+true
+

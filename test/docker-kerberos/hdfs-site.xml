@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>dfs.replication</name><value>1</value></property>
+  <property><name>dfs.namenode.name.dir</name><value>/tmp/hadoop-kerberos/nn</value></property>
+  <property><name>dfs.datanode.data.dir</name><value>/tmp/hadoop-kerberos/dn</value></property>
+  <property><name>dfs.namenode.rpc-address</name><value>localhost:28020</value></property>
+  <property><name>dfs.namenode.http-address</name><value>0.0.0.0:29870</value></property>
+  <property><name>dfs.namenode.secondary.http-address</name><value>0.0.0.0:29868</value></property>
+  <property><name>dfs.datanode.address</name><value>0.0.0.0:29866</value></property>
+  <property><name>dfs.datanode.http.address</name><value>0.0.0.0:29864</value></property>
+  <property><name>dfs.datanode.ipc.address</name><value>0.0.0.0:29867</value></property>
+  <property><name>dfs.datanode.hostname</name><value>localhost</value></property>
+  <property><name>dfs.namenode.datanode.registration.ip-hostname-check</name><value>false</value></property>
+  <property><name>dfs.namenode.safemode.extension</name><value>0</value></property>
+  <property><name>dfs.block.access.token.enable</name><value>true</value></property>
+  <property><name>dfs.namenode.kerberos.principal</name><value>nn/localhost@EXAMPLE.COM</value></property>
+  <property><name>dfs.namenode.keytab.file</name><value>/kerberos/hdfs.keytab</value></property>
+  <property><name>dfs.namenode.kerberos.internal.spnego.principal</name><value>HTTP/localhost@EXAMPLE.COM</value></property>
+  <property><name>dfs.datanode.kerberos.principal</name><value>dn/localhost@EXAMPLE.COM</value></property>
+  <property><name>dfs.datanode.keytab.file</name><value>/kerberos/hdfs.keytab</value></property>
+  <property><name>dfs.web.authentication.kerberos.principal</name><value>HTTP/localhost@EXAMPLE.COM</value></property>
+  <property><name>dfs.web.authentication.kerberos.keytab</name><value>/kerberos/hdfs.keytab</value></property>
+  <!-- a secure DataNode normally needs privileged ports or SASL+HTTPS; fine for a test cluster -->
+  <property><name>ignore.secure.ports.for.testing</name><value>true</value></property>
+</configuration>

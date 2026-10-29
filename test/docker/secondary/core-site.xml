@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>fs.defaultFS</name><value>hdfs://localhost:8020</value></property>
+  <property><name>hadoop.tmp.dir</name><value>/tmp/hadoop</value></property>
+  <!-- HttpFS runs as hadoop and acts for the users it serves -->
+  <property><name>hadoop.proxyuser.hadoop.hosts</name><value>*</value></property>
+  <property><name>hadoop.proxyuser.hadoop.groups</name><value>*</value></property>
+  <property><name>hadoop.http.staticuser.user</name><value>hadoop</value></property>
+</configuration>

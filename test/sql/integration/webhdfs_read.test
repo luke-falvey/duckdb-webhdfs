@@ -1,0 +1,237 @@
+# name: test/sql/integration/webhdfs_read.test
+# description: reading files over WebHDFS
+# group: [integration]
+
+require webhdfs
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+query IT
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+0	name_0
+1	name_1
+2	name_2
+3	name_3
+4	name_4
+
+query IIIT
+SELECT count(*), sum(id), sum(doubled), max(label) FROM 'webhdfs://localhost:9870/test/data/numbers.parquet';
+----
+100000	4999950000	9999900000	value_99999
+
+query IT
+SELECT * FROM 'webhdfs://localhost:9870/test/data/records.json' ORDER BY a;
+----
+1	x
+2	y
+
+# read-ahead windows of every size (they must always contain the requested range); 1300000 > numbers.parquet,
+# so that file is fetched whole, and smaller sizes put window edges inside reads near the footer
+foreach bufsize 1 7 1000 65536 100000 1000000 1300000
+
+statement ok
+SET webhdfs_read_buffer_size = ${bufsize};
+
+query III
+SELECT count(*), sum(id), count(DISTINCT label) FROM 'webhdfs://localhost:9870/test/data/numbers.parquet';
+----
+100000	4999950000	100000
+
+query II
+SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5	10
+
+endloop
+
+statement ok
+RESET webhdfs_read_buffer_size;
+
+# spaces and non-ASCII characters in paths
+query TI
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/space dir/ünï cødé.csv');
+----
+unicode	42
+
+query TI
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/space dir/*.csv');
+----
+unicode	42
+
+# parallel scans of one file (the Parquet reader reads column chunks from several threads)
+statement ok
+SET threads = 4;
+
+query II
+SELECT count(DISTINCT label), sum(id % 7) FROM 'webhdfs://localhost:9870/test/data/numbers.parquet';
+----
+100000	299995
+
+# no read-ahead and no redirect reuse give the same result
+statement ok
+SET webhdfs_read_buffer_size = 0;
+
+statement ok
+SET webhdfs_reuse_redirects = false;
+
+query II
+SELECT count(*), sum(id) FROM 'webhdfs://localhost:9870/test/data/numbers.parquet';
+----
+100000	4999950000
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5
+
+statement ok
+RESET webhdfs_read_buffer_size;
+
+statement ok
+RESET webhdfs_reuse_redirects;
+
+# globbing: hidden entries (_SUCCESS, _temporary.csv, .hidden.csv) are skipped
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/*') ORDER BY 1;
+----
+numbers.parquet
+people.csv
+records.json
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/_*') ORDER BY 1;
+----
+_SUCCESS
+_temporary.csv
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/.hidden.csv');
+----
+.hidden.csv
+
+statement ok
+SET webhdfs_include_hidden = true;
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:9870/test/data/*');
+----
+6
+
+statement ok
+RESET webhdfs_include_hidden;
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/**/*.csv') ORDER BY 1;
+----
+deeper.csv
+nested.csv
+people.csv
+ünï cødé.csv
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:9870/test/data/**');
+----
+6
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/{sub,sub/deep}/*.csv') ORDER BY 1;
+----
+deeper.csv
+nested.csv
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/[np]*.[cp]*') ORDER BY 1;
+----
+numbers.parquet
+people.csv
+
+query T
+SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/people.cs?');
+----
+people.csv
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:9870/test/nothing/here/*.csv');
+----
+0
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/*.nope');
+----
+No files found that match the pattern
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/missing.csv');
+----
+No files found that match the pattern
+
+# 200 files: many LISTSTATUS_BATCH pages (dfs.ls.limit = 5 on the test cluster), listed in parallel
+statement ok
+SET webhdfs_list_parallelism = 1;
+
+query II
+SELECT count(*), sum(n::INTEGER) FROM read_csv('webhdfs://localhost:9870/test/many/*.txt');
+----
+200	20100
+
+statement ok
+SET webhdfs_list_parallelism = 16;
+
+query II
+SELECT count(*), sum(n::INTEGER) FROM read_csv('webhdfs://localhost:9870/test/many/*.txt');
+----
+200	20100
+
+statement ok
+RESET webhdfs_list_parallelism;
+
+# file order is stable (sorted)
+query I
+SELECT list(parse_filename(file)) = list_sort(list(parse_filename(file))) FROM glob('webhdfs://localhost:9870/test/many/*');
+----
+true
+
+# Hive partitioned data
+query II
+SELECT count(*), sum(id) FROM read_parquet('webhdfs://localhost:9870/test/hive/*/*/*.parquet', hive_partitioning = true) WHERE year = '2023' AND month = '5';
+----
+10	20230545
+
+query III
+SELECT count(*), count(DISTINCT year), count(DISTINCT month) FROM read_parquet('webhdfs://localhost:9870/test/hive/**/*.parquet');
+----
+360	3	12
+
+# naming the partitions in the pattern lists only those directories
+query II
+SELECT count(*), sum(id) FROM read_parquet('webhdfs://localhost:9870/test/hive/year=2023/month={5,6}/*.parquet', hive_partitioning = true);
+----
+20	40461190
+
+# the HttpFS gateway serves data itself, without DataNode redirects
+query IT
+SELECT * FROM read_csv('webhdfs://localhost:14000/test/data/people.csv') ORDER BY id LIMIT 2;
+----
+0	name_0
+1	name_1
+
+query II
+SELECT count(*), sum(id) FROM 'webhdfs://localhost:14000/test/data/numbers.parquet';
+----
+100000	4999950000
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:14000/test/many/*');
+----
+200
+

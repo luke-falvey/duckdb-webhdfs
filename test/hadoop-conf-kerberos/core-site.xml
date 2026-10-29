@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<!-- Client configuration for the Kerberos tests (HADOOP_CONF_DIR): selects Kerberos without a secret. -->
+<configuration>
+  <property><name>hadoop.security.authentication</name><value>kerberos</value></property>
+</configuration>

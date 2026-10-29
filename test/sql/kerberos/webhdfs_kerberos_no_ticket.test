@@ -1,0 +1,27 @@
+# name: test/sql/kerberos/webhdfs_kerberos_no_ticket.test
+# description: a Kerberos-secured cluster without a ticket gives a clear error
+# group: [kerberos]
+
+require webhdfs
+
+require httpfs
+
+require-env WEBHDFS_KERBEROS_NO_TICKET
+
+statement ok
+CREATE SECRET kerberized (TYPE webhdfs, SCOPE 'webhdfs://localhost:29870', AUTH 'kerberos');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:29870/kerb/data.csv');
+----
+run kinit
+
+# simple authentication is refused by the secured cluster
+statement ok
+CREATE OR REPLACE SECRET kerberized (TYPE webhdfs, SCOPE 'webhdfs://localhost:29870', AUTH 'simple', USER_NAME 'alice');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:29870/kerb/data.csv');
+----
+Permission Error
+

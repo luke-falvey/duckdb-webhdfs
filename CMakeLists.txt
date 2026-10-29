@@ -1,13 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-# Set extension name here
-set(TARGET_NAME waddle)
-
-# DuckDB's extension distribution supports vcpkg. As such, dependencies can be
-# added in ./vcpkg.json and then used in cmake with find_package. Feel free to
-# remove or replace with other dependencies. Note that it should also be removed
-# from vcpkg.json to prevent needlessly installing it..
-find_package(OpenSSL REQUIRED)
+set(TARGET_NAME webhdfs)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
@@ -21,14 +14,40 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/waddle_extension.cpp)
+# No third-party dependencies: HTTP comes from httpfs at runtime (through
+# DuckDB's HTTPUtil), JSON from the yyjson copy in DuckDB core, and Kerberos
+# from the system GSSAPI library, loaded with dlopen when first needed.
+set(EXTENSION_SOURCES
+    src/webhdfs_client.cpp
+    src/webhdfs_config.cpp
+    src/webhdfs_extension.cpp
+    src/webhdfs_file_list.cpp
+    src/webhdfs_filesystem.cpp
+    src/webhdfs_functions.cpp
+    src/webhdfs_glob.cpp
+    src/webhdfs_hadoop_config.cpp
+    src/webhdfs_http.cpp
+    src/webhdfs_json.cpp
+    src/webhdfs_kerberos.cpp
+    src/webhdfs_secret.cpp
+    src/webhdfs_url.cpp
+    src/webhdfs_walk.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# Link OpenSSL in both the static library as the loadable extension
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+if(NOT WIN32)
+  target_link_libraries(${EXTENSION_NAME} ${CMAKE_DL_LIBS})
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} ${CMAKE_DL_LIBS})
+endif()
+
+# Most of the loadable extension is the part of DuckDB core it links statically.
+# Its static symbol table adds about a fifth to the file and isn't needed to
+# load or run it, so release builds on Linux drop it (the dynamic symbols that
+# loading uses are kept).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
+  target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -s)
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

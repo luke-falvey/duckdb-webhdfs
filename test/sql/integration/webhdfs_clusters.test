@@ -1,0 +1,117 @@
+# name: test/sql/integration/webhdfs_clusters.test
+# description: secrets, several clusters, NameNode failover and DataNode address maps
+# group: [integration]
+
+require webhdfs
+
+require httpfs
+
+require parquet
+
+require json
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+# a secret scoped to a subtree picks the user for that subtree only
+statement ok
+CREATE SECRET as_alice (TYPE webhdfs, SCOPE 'webhdfs://localhost:9870/test/private', USER_NAME 'alice');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/private/secret.csv');
+----
+user=alice
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5
+
+statement ok
+DROP SECRET as_alice;
+
+query T
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/private/secret.csv');
+----
+secret
+
+# two clusters in one query, each with its own user
+statement ok
+CREATE SECRET primary_cluster (TYPE webhdfs, SCOPE 'webhdfs://localhost:9870', USER_NAME 'hadoop');
+
+statement ok
+CREATE SECRET secondary_cluster (TYPE webhdfs, SCOPE 'webhdfs://localhost:19870', USER_NAME 'bob');
+
+query TI
+SELECT a.source, count(*) FROM read_csv('webhdfs://localhost:19870/other/data.csv') a JOIN read_csv('webhdfs://localhost:9870/test/data/people.csv') b ON a.id = b.id GROUP BY ALL;
+----
+other cluster	4
+
+query TT
+SELECT endpoint, secret_name FROM webhdfs_namenodes() WHERE endpoint IN ('webhdfs://localhost:9870', 'webhdfs://localhost:19870') ORDER BY 1;
+----
+webhdfs://localhost:19870	secondary_cluster
+webhdfs://localhost:9870	primary_cluster
+
+# HA from a secret: an unreachable NameNode, a standby, then the active one
+statement ok
+CREATE SECRET ha (TYPE webhdfs, SCOPE 'webhdfs://mycluster', NAMENODES ['localhost:1', 'localhost:19999', 'localhost:9870'], USER_NAME 'hadoop');
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://mycluster/test/data/people.csv');
+----
+5
+
+query TTI
+SELECT namenode, state, active FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://mycluster' ORDER BY namenode;
+----
+localhost:1	unreachable	false
+localhost:19999	standby	false
+localhost:9870	active	true
+
+# the active NameNode is remembered: later requests go straight to it
+statement ok
+CREATE TABLE before AS SELECT namenode, requests FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://mycluster';
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://mycluster/test/data/*.csv');
+----
+5
+
+query TI
+SELECT n.namenode, n.requests > b.requests FROM webhdfs_namenodes() n JOIN before b USING (namenode) WHERE n.endpoint = 'webhdfs://mycluster' ORDER BY 1;
+----
+localhost:1	false
+localhost:19999	false
+localhost:9870	true
+
+# writes fail over too
+statement ok
+COPY (SELECT 7 AS x) TO 'webhdfs://mycluster/test/out/ha_write.csv';
+
+query I
+SELECT x FROM read_csv('webhdfs://localhost:9870/test/out/ha_write.csv');
+----
+7
+
+# HA from hdfs-site.xml (HADOOP_CONF_DIR=test/hadoop-conf): testcluster = fake standby + the real NameNode
+require-env HADOOP_CONF_DIR
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://testcluster/test/data/people.csv');
+----
+5
+
+query TTT
+SELECT namenode, state, namenode_source FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://testcluster' ORDER BY namenode;
+----
+localhost:19999	standby	hdfs-site.xml
+localhost:9870	active	hdfs-site.xml
+
+statement error
+SELECT * FROM read_csv('webhdfs://deadcluster/test/data/people.csv');
+----
+no NameNode could serve the request
+

@@ -237,7 +237,7 @@ Paths are percent-encoded segment by segment (space, `%`, `#`, `?`, non-ASCII).
 ### The `webhdfs` secret
 
 Connection settings live in a DuckDB secret with type `webhdfs`, scoped by URL
-prefix. This follows the S3 model and keeps credentials out of SQL text.
+(whole scheme and authority, then a path prefix; see §10). This follows the S3 model and keeps credentials out of SQL text.
 
 ```sql
 CREATE SECRET prod_hdfs (
@@ -695,6 +695,13 @@ implementation differs from this plan:
   an unprivileged MIT KDC on the host rather than in a container.
 - **The no-httpfs test** works in the regular test runner, because the runner
   turns extension autoloading off.
+- **Secret scopes match whole authorities.** Core matches scopes as plain
+  string prefixes, so `webhdfs://prod` would also cover `webhdfs://prod2/...`.
+  The `webhdfs` secret is a `KeyValueSecret` subclass whose `MatchScore` needs
+  the scope's scheme and authority to equal the URL's (case-insensitively); the
+  path part stays a prefix. Core reloads persistent key-value secrets as plain
+  `KeyValueSecret`s, so the subclass serializes itself as a custom secret (same
+  fields) to come back through the type's deserializer.
 - **yyjson visibility (§9) is not a risk.** A loadable extension links the parts
   of DuckDB core it uses (yyjson included) statically, with their symbols
   hidden. The stripped Linux build loads and runs in a stock DuckDB 2.0.0

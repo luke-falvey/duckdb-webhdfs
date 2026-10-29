@@ -81,6 +81,59 @@ SELECT scope FROM duckdb_secrets() WHERE name = 'hdfs_default';
 ----
 ['webhdfs://', 'swebhdfs://']
 
+# scopes match whole authorities: 'cluster-a' is not a prefix match for 'cluster-ab' or 'cluster-a:9870'
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a/data/x.parquet', 'webhdfs');
+----
+hdfs_a
+
+query T
+SELECT name FROM which_secret('WEBHDFS://Cluster-A/x', 'webhdfs');
+----
+hdfs_a
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a', 'webhdfs');
+----
+hdfs_a
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-ab/x', 'webhdfs');
+----
+hdfs_default
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a:9870/x', 'webhdfs');
+----
+hdfs_default
+
+query T
+SELECT name FROM which_secret('swebhdfs://cluster-a/x', 'webhdfs');
+----
+hdfs_default
+
+# a scope with a path is a prefix match after the authority
+statement ok
+CREATE SECRET hdfs_a_logs (TYPE webhdfs, SCOPE 'webhdfs://cluster-a/logs');
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a/logs/2024/x', 'webhdfs');
+----
+hdfs_a_logs
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a/data/x', 'webhdfs');
+----
+hdfs_a
+
+query T
+SELECT name FROM which_secret('webhdfs://cluster-a/LOGS/x', 'webhdfs');
+----
+hdfs_a
+
+statement ok
+DROP SECRET hdfs_a_logs;
+
 statement error
 CREATE SECRET bad1 (TYPE webhdfs, AUTH 'basic');
 ----

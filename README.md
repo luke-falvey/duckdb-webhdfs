@@ -52,8 +52,16 @@ CREATE SECRET prod_hdfs (
 );
 ```
 
-A secret applies to the URLs its `SCOPE` prefixes (the longest match wins; the default scope is every `webhdfs://`
-and `swebhdfs://` URL). Options:
+A secret applies to the URLs its `SCOPE` covers; the longest matching scope wins, and the default scope is every
+`webhdfs://` and `swebhdfs://` URL. Unlike plain prefix scopes, a scope's scheme and authority must match the URL's
+whole scheme and authority (case-insensitively): `webhdfs://prod` covers `webhdfs://prod/...` but not
+`webhdfs://prod2/...` or `webhdfs://prod:9870/...`. A path after the authority, as in `webhdfs://prod/logs`, is a
+plain prefix of the URL's path.
+
+The authority doesn't have to be a host: a secret with `NAMENODES` turns any name into an alias for a cluster, so
+`webhdfs://prod/data/x.parquet` goes to the NameNodes of the secret scoped to `webhdfs://prod`.
+
+Options:
 
 | Option | Meaning |
 |---|---|

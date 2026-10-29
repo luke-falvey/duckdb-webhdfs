@@ -16,9 +16,9 @@ statement ok
 SET webhdfs_user_name = 'hadoop';
 
 query TTITI
-SELECT name, type, size, permissions, replication IS NULL FROM webhdfs_ls('webhdfs://localhost:9870/test/data') ORDER BY name;
+SELECT name, type, CASE WHEN name = 'numbers.parquet' THEN (size = (SELECT size FROM read_blob('build/webhdfs_fixtures/numbers.parquet')))::VARCHAR ELSE size::VARCHAR END, permissions, replication IS NULL FROM webhdfs_ls('webhdfs://localhost:9870/test/data') ORDER BY name;
 ----
-numbers.parquet	file	1294158	rw-r--r--	false
+numbers.parquet	file	true	rw-r--r--	false
 people.csv	file	53	rw-r--r--	false
 records.json	file	32	rw-r--r--	false
 space dir	directory	0	rwxr-xr-x	true
@@ -95,9 +95,9 @@ SELECT file_and_directory_count, quota, space_consumed, space_quota FROM webhdfs
 2	100	53	1073741824
 
 query IITI
-SELECT "offset", length, hosts, corrupt FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet');
+SELECT "offset", length = (SELECT size FROM read_blob('build/webhdfs_fixtures/numbers.parquet')), hosts, corrupt FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet');
 ----
-0	1294158	[localhost]	false
+0	true	[localhost]	false
 
 query I
 SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', "offset" := 0, length := 10);

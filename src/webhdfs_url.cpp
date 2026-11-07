@@ -35,6 +35,25 @@ bool HasWebHdfsScheme(const std::string &url) {
 	return StartsWithCI(url, "webhdfs://") || StartsWithCI(url, "swebhdfs://");
 }
 
+std::string SchemeRootOf(const std::string &path) {
+	for (auto scheme : {WEBHDFS_SCHEME, SWEBHDFS_SCHEME}) {
+		auto root = std::string(scheme) + ":/";
+		if (path.size() == root.size() && StartsWithCI(path, root)) {
+			return scheme;
+		}
+	}
+	return "";
+}
+
+std::string ScopeAuthority(const std::string &scope, const std::string &scheme) {
+	auto prefix = scheme + "://";
+	if (!StartsWithCI(scope, prefix)) {
+		return "";
+	}
+	auto end = scope.find_first_of("/?#", prefix.size());
+	return ToLower(scope.substr(prefix.size(), end == std::string::npos ? std::string::npos : end - prefix.size()));
+}
+
 bool SplitHostPort(const std::string &authority, std::string &host, int &port) {
 	port = 0;
 	std::string port_str;

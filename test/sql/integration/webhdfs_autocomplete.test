@@ -1,0 +1,67 @@
+# name: test/sql/integration/webhdfs_autocomplete.test
+# description: autocomplete of webhdfs:// paths and cluster names against the test clusters
+# group: [integration]
+
+require webhdfs
+
+require httpfs
+
+require autocomplete
+
+require-env WEBHDFS_TEST_RUNNING
+
+statement ok
+SET webhdfs_user_name = 'hadoop';
+
+# directories end in '/', files close the quote
+query I
+SELECT list(suggestion ORDER BY suggestion)
+FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:9870/test/data/$$)
+WHERE suggestion IN ('people.csv''', 'numbers.parquet''', 'sub/', 'space dir/');
+----
+['numbers.parquet\'', 'people.csv\'', space dir/, sub/]
+
+query I
+SELECT count(*) > 0 FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:9870/test/da$$) WHERE suggestion = 'data/';
+----
+true
+
+# a file or a missing path has nothing below it
+query I
+SELECT count(*) FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:9870/test/data/people.csv/$$);
+----
+0
+
+query I
+SELECT count(*) FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:9870/test/missing/$$);
+----
+0
+
+# the same through the HttpFS gateway, which names a listed file differently
+query I
+SELECT count(*) > 0 FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:14000/test/data/$$) WHERE suggestion = 'people.csv''';
+----
+true
+
+query I
+SELECT count(*) FROM sql_auto_complete($$SELECT * FROM 'webhdfs://localhost:14000/test/data/people.csv/$$);
+----
+0
+
+# one NameNode request per listing page (5 entries on the test cluster), on an endpoint no other statement used
+query I
+SELECT count(*) > 0 FROM sql_auto_complete($$SELECT * FROM 'webhdfs://127.0.0.1:9870/test/data/sub/$$) WHERE suggestion = 'deep/';
+----
+true
+
+query I
+SELECT sum(requests) FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://127.0.0.1:9870';
+----
+1
+
+# the HA nameservices of hdfs-site.xml (HADOOP_CONF_DIR) are offered as cluster names
+query I
+SELECT list(suggestion ORDER BY suggestion)
+FROM sql_auto_complete($$SELECT * FROM 'webhdfs://$$) WHERE suggestion IN ('testcluster/', 'deadcluster/');
+----
+[deadcluster/, testcluster/]

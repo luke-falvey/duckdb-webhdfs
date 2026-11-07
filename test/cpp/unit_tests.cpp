@@ -62,6 +62,22 @@ TEST(url_paths) {
 	CHECK_EQ(NormalizePath("//a///b/./"), "/a/b");
 }
 
+TEST(url_scheme_roots_and_scopes) {
+	// autocomplete lists "webhdfs:/" to complete what follows "webhdfs://"
+	CHECK_EQ(SchemeRootOf("webhdfs:/"), "webhdfs");
+	CHECK_EQ(SchemeRootOf("SWEBHDFS:/"), "swebhdfs");
+	CHECK_EQ(SchemeRootOf("webhdfs:"), "");
+	CHECK_EQ(SchemeRootOf("webhdfs://"), "");
+	CHECK_EQ(SchemeRootOf("webhdfs:/x"), "");
+	CHECK_EQ(SchemeRootOf("/tmp"), "");
+	CHECK_EQ(ScopeAuthority("webhdfs://Prod", "webhdfs"), "prod");
+	CHECK_EQ(ScopeAuthority("webhdfs://prod:9870/logs", "webhdfs"), "prod:9870");
+	CHECK_EQ(ScopeAuthority("webhdfs://prod?x", "webhdfs"), "prod");
+	CHECK_EQ(ScopeAuthority("webhdfs://", "webhdfs"), "");
+	CHECK_EQ(ScopeAuthority("swebhdfs://prod", "webhdfs"), "");
+	CHECK_EQ(ScopeAuthority("s3://bucket", "webhdfs"), "");
+}
+
 TEST(url_encoding) {
 	CHECK_EQ(EncodePath("/a b/ü%#?&+="), "/a%20b/%C3%BC%25%23%3F%26%2B%3D");
 	CHECK_EQ(EncodeQueryValue("a/b c&d"), "a%2Fb%20c%26d");

@@ -188,13 +188,31 @@ static string GetEnv(const char *name) {
 	return value ? value : "";
 }
 
+static CatalogTransaction SecretTransaction(DatabaseInstance &db, optional_ptr<FileOpener> opener) {
+	auto context = FileOpener::TryGetClientContext(opener);
+	return context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+	               : CatalogTransaction::GetSystemTransaction(db);
+}
+
+vector<string> WebHdfsSecretAuthorities(DatabaseInstance &db, optional_ptr<FileOpener> opener, const string &scheme) {
+	vector<string> result;
+	for (auto &entry : SecretManager::Get(db).AllSecrets(SecretTransaction(db, opener))) {
+		if (!entry.secret || !StringUtil::CIEquals(entry.secret->GetType().GetIdentifierName(), "webhdfs")) {
+			continue;
+		}
+		for (auto &scope : entry.secret->GetScope()) {
+			auto authority = webhdfs::ScopeAuthority(scope, scheme);
+			if (!authority.empty()) {
+				result.push_back(std::move(authority));
+			}
+		}
+	}
+	return result;
+}
+
 static optional_ptr<const KeyValueSecret> LookupSecret(DatabaseInstance &db, optional_ptr<FileOpener> opener,
                                                        const string &path, SecretMatch &match) {
-	auto context = FileOpener::TryGetClientContext(opener);
-	auto &secret_manager = SecretManager::Get(db);
-	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
-	                           : CatalogTransaction::GetSystemTransaction(db);
-	match = secret_manager.LookupSecret(transaction, path, "webhdfs");
+	match = SecretManager::Get(db).LookupSecret(SecretTransaction(db, opener), path, "webhdfs");
 	if (!match.HasMatch()) {
 		return nullptr;
 	}

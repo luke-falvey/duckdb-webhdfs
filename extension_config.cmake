@@ -7,6 +7,11 @@ duckdb_extension_load(webhdfs
 )
 duckdb_extension_statically_link(webhdfs)
 
+# Tab completion in the bundled shell (and sql_auto_complete in tests), including webhdfs:// paths and cluster names.
+# Stock DuckDB shells ship it already; it isn't part of the webhdfs extension.
+duckdb_extension_load(autocomplete)
+duckdb_extension_statically_link(autocomplete)
+
 # httpfs supplies every HTTP request webhdfs makes, at runtime, through DuckDB's
 # HTTPUtil interface. webhdfs never links it. It is built here only so the test
 # runner and the bundled shell have it; the commit is the one DuckDB v2.0.0 pins

@@ -1,0 +1,68 @@
+# name: test/sql/webhdfs_autocomplete.test
+# description: autocomplete of webhdfs:// cluster names, functions and settings (no cluster needed)
+# group: [sql]
+
+require webhdfs
+
+require httpfs
+
+require autocomplete
+
+# functions and settings come from the catalog
+query I
+SELECT count(*) > 0 FROM sql_auto_complete('SELECT * FROM webhdfs_l') WHERE suggestion = 'webhdfs_ls';
+----
+true
+
+query I
+SELECT count(*) > 0 FROM sql_auto_complete('SET webhdfs_list_par') WHERE suggestion = 'webhdfs_list_parallelism';
+----
+true
+
+statement ok
+CREATE SECRET prod_alias (TYPE webhdfs, SCOPE 'webhdfs://prod-alias', NAMENODES ['localhost:1']);
+
+statement ok
+CREATE SECRET prod_logs (TYPE webhdfs, SCOPE 'webhdfs://Prod-Logs:9870/logs');
+
+statement ok
+CREATE SECRET prod_secure (TYPE webhdfs, SCOPE 'swebhdfs://prod-secure');
+
+statement ok
+CREATE SECRET everything (TYPE webhdfs);
+
+# "webhdfs://" completes to the clusters named in secret scopes, for that scheme, inserted after "//"
+query II
+SELECT list(suggestion ORDER BY suggestion), list(DISTINCT suggestion_start)
+FROM sql_auto_complete($$SELECT * FROM 'webhdfs://pro$$) WHERE suggestion LIKE 'prod%';
+----
+[prod-alias/, 'prod-logs:9870/']	[25]
+
+query I
+SELECT list(suggestion ORDER BY suggestion)
+FROM sql_auto_complete($$SELECT * FROM 'swebhdfs://$$) WHERE suggestion LIKE 'prod%';
+----
+[prod-secure/]
+
+# inside a function call too
+query I
+SELECT list(suggestion ORDER BY suggestion)
+FROM sql_auto_complete($$SELECT * FROM read_parquet('webhdfs://$$) WHERE suggestion LIKE 'prod%';
+----
+[prod-alias/, 'prod-logs:9870/']
+
+# clusters used in this session are offered as well (this one can't be reached)
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:2/x.csv');
+----
+
+query I
+SELECT list(suggestion) FROM sql_auto_complete($$SELECT * FROM 'webhdfs://$$) WHERE suggestion LIKE 'localhost%';
+----
+['localhost:2/']
+
+# nothing is offered for a scheme root that isn't "scheme:/" + "/"
+query I
+SELECT count(*) FROM sql_auto_complete($$SELECT * FROM 'webhdfs:/$$) WHERE suggestion LIKE 'prod%';
+----
+0

@@ -7,6 +7,7 @@
 #include "webhdfs_file_list.hpp"
 
 #include <algorithm>
+#include <set>
 #include <cstring>
 
 namespace duckdb {
@@ -144,7 +145,33 @@ shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, opt
 }
 
 bool WebHdfsFileSystem::CanHandleFile(const string &fpath) {
-	return webhdfs::HasWebHdfsScheme(fpath);
+	return webhdfs::HasWebHdfsScheme(fpath) || !webhdfs::SchemeRootOf(fpath).empty();
+}
+
+void WebHdfsFileSystem::ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
+                                         const std::function<void(OpenFileInfo &info)> &callback) {
+	std::set<string> names;
+	for (auto &authority : WebHdfsSecretAuthorities(db, opener, scheme)) {
+		names.insert(authority);
+	}
+	for (auto &nameservice : webhdfs::SplitCommaList(SiteConfig().Get("dfs.nameservices"))) {
+		names.insert(StringUtil::Lower(nameservice));
+	}
+	auto prefix = scheme + "://";
+	{
+		lock_guard<mutex> guard(endpoints_lock);
+		for (auto &entry : endpoints) {
+			if (StringUtil::StartsWith(entry.first, prefix) && entry.first.size() > prefix.size()) {
+				names.insert(entry.first.substr(prefix.size()));
+			}
+		}
+	}
+	FileStatus status;
+	status.is_dir = true;
+	for (auto &name : names) {
+		auto info = MakeOpenFileInfo(name, status);
+		callback(info);
+	}
 }
 
 OpenFileInfo WebHdfsFileSystem::MakeOpenFileInfo(const string &url, const FileStatus &status) {
@@ -495,13 +522,15 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
                                           const std::function<void(OpenFileInfo &info)> &callback,
                                           optional_ptr<FileOpener> opener) {
+	auto scheme = webhdfs::SchemeRootOf(directory);
+	if (!scheme.empty()) {
+		// "webhdfs:/" is what autocomplete lists for "webhdfs://<Tab>": offer the clusters this session knows
+		ListClusterNames(scheme, opener, callback);
+		return true;
+	}
 	WebHdfsUrl parsed;
 	auto client = CreateClient(directory, opener, parsed);
-	FileStatus status;
-	if (!client->TryGetFileStatus(parsed.path, status) || !status.is_dir) {
-		return false;
-	}
-	client->ListStatus(parsed.path, [&](vector<FileStatus> &entries) {
+	return client->TryListDirectory(parsed.path, [&](vector<FileStatus> &entries) {
 		for (auto &entry : entries) {
 			if (entry.path_suffix.empty()) {
 				continue;
@@ -510,7 +539,6 @@ bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
 			callback(info);
 		}
 	});
-	return true;
 }
 
 bool WebHdfsFileSystem::ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,

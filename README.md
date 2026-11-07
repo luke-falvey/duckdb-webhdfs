@@ -172,6 +172,19 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
 | `webhdfs_reuse_redirects` | true | Reuse a file's DataNode redirect for later reads of it. |
 | `webhdfs_user_name` | (unset) | User for simple authentication when no secret sets one. |
 
+## Autocomplete
+
+In the DuckDB shell (or anything using DuckDB's `autocomplete` extension, e.g. `sql_auto_complete`), Tab completes
+`webhdfs://` and `swebhdfs://` URLs inside quotes:
+
+- After `webhdfs://`: the cluster names this session knows, from `webhdfs` secret scopes (aliases), the HA
+  nameservices in `hdfs-site.xml`, and clusters already used. `'webhdfs://pr` + Tab gives `'webhdfs://prod/`.
+- After a cluster: the entries of the directory typed so far. Directories end in `/`; files close the quote.
+
+Each Tab on a path lists that directory: one NameNode request per listing page (1,000 entries by default), with the
+current session's secrets and settings. A huge directory, or a cluster that doesn't answer, makes Tab wait for the
+listing or for httpfs's timeout; the shell then just offers nothing.
+
 ## Performance notes
 
 - Each file read costs one NameNode request (`OPEN`, answered by a redirect to a DataNode); later reads of the same
@@ -209,7 +222,7 @@ GEN=ninja make            # needs CMake, a C++17 compiler, and libcurl + OpenSSL
 
 The CI distribution build gets curl and OpenSSL from vcpkg (`vcpkg.json`). Artifacts:
 
-- `build/release/duckdb`: shell with webhdfs and httpfs linked in
+- `build/release/duckdb`: shell with webhdfs, httpfs and autocomplete linked in
 - `build/release/extension/webhdfs/webhdfs.duckdb_extension`: the loadable extension (about 13 MB, almost all of it
   the parts of DuckDB core it links statically, like every C++ extension; Linux release builds strip its symbol
   table)

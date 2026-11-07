@@ -451,7 +451,8 @@ FileStatus WebHdfsClient::GetFileStatus(const string &path) {
 	return status;
 }
 
-void WebHdfsClient::ListStatus(const string &path, const std::function<void(vector<FileStatus> &)> &callback) {
+bool WebHdfsClient::ListStatus(const string &path, const std::function<void(vector<FileStatus> &)> &callback,
+                               bool missing_ok) {
 	if (endpoint.batch_listing.load() != 0) {
 		string start_after;
 		bool first = true;
@@ -468,6 +469,9 @@ void WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 					endpoint.batch_listing = 0;
 					break;
 				}
+				if (first && missing_ok && kind == WebHdfsErrorKind::NOT_FOUND) {
+					return false;
+				}
 				ThrowError("LISTSTATUS_BATCH", path, result);
 			}
 			endpoint.batch_listing = 1;
@@ -483,12 +487,16 @@ void WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 			}
 			callback(entries);
 			if (remaining <= 0 || start_after.empty()) {
-				return;
+				return true;
 			}
 		}
 	}
 	auto result = NameNodeCall(RequestType::GET_REQUEST, "LISTSTATUS", path, {});
 	if (!result.Ok()) {
+		RemoteException exception;
+		if (missing_ok && ClassifyWebHdfsError(result, exception) == WebHdfsErrorKind::NOT_FOUND) {
+			return false;
+		}
 		ThrowError("LISTSTATUS", path, result);
 	}
 	vector<FileStatus> entries;
@@ -498,6 +506,34 @@ void WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 		throw IOException("WebHDFS LISTSTATUS on \"%s\": %s", UrlFor(path), error);
 	}
 	callback(entries);
+	return true;
+}
+
+bool WebHdfsClient::TryListDirectory(const string &path, const std::function<void(vector<FileStatus> &)> &callback) {
+	bool first_page = true;
+	bool is_file = false;
+	auto found = ListStatus(
+	    path,
+	    [&](vector<FileStatus> &page) {
+		    if (first_page) {
+			    first_page = false;
+			    // Listing a file returns the file itself: the NameNode names it "", some gateways by its own name,
+			    // which a directory holding one file of the same name would also return, so GETFILESTATUS decides.
+			    if (page.size() == 1 && !page[0].is_dir) {
+				    auto &suffix = page[0].path_suffix;
+				    FileStatus status;
+				    if (suffix.empty() ||
+				        (suffix == webhdfs::BaseName(path) && (!TryGetFileStatus(path, status) || !status.is_dir))) {
+					    is_file = true;
+				    }
+			    }
+		    }
+		    if (!is_file) {
+			    callback(page);
+		    }
+	    },
+	    true);
+	return found && !is_file;
 }
 
 bool WebHdfsClient::CheckBoolean(const string &op, const string &path, const WebHdfsHttpResult &result) {

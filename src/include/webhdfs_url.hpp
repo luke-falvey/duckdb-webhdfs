@@ -38,6 +38,13 @@ struct WebHdfsUrl {
 //! True if the string starts with webhdfs:// or swebhdfs:// (case-insensitive scheme)
 bool HasWebHdfsScheme(const std::string &url);
 
+//! "webhdfs" or "swebhdfs" when `path` is exactly "webhdfs:/" or "swebhdfs:/" (case-insensitive), else "". DuckDB's
+//! autocomplete lists that directory to complete what follows "webhdfs://": the cluster names.
+std::string SchemeRootOf(const std::string &path);
+//! The authority a secret scope names for `scheme` ("webhdfs://prod/logs" -> "prod", lowercased), or "" when the
+//! scope is for another scheme or names no authority ("webhdfs://").
+std::string ScopeAuthority(const std::string &scope, const std::string &scheme);
+
 //! Parse a webhdfs:// or swebhdfs:// URL. Returns false and sets `error` when the URL is invalid.
 bool ParseWebHdfsUrl(const std::string &url, WebHdfsUrl &out, std::string &error);
 

@@ -137,6 +137,10 @@ protected:
 	}
 
 private:
+	//! The cluster names offered for "scheme://": secret scopes, hdfs-site.xml nameservices and clusters in use
+	void ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
+	                      const std::function<void(OpenFileInfo &info)> &callback);
+
 	DatabaseInstance &db;
 	mutex endpoints_lock;
 	unordered_map<string, unique_ptr<WebHdfsEndpoint>> endpoints;

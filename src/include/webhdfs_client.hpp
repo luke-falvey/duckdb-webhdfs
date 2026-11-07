@@ -134,8 +134,13 @@ public:
 	bool TryGetFileStatus(const string &path, webhdfs::FileStatus &out);
 	webhdfs::FileStatus GetFileStatus(const string &path);
 	//! LISTSTATUS_BATCH (or LISTSTATUS on NameNodes without it); `callback` receives the entries page by page.
-	//! A file path lists the file itself (with an empty path_suffix).
-	void ListStatus(const string &path, const std::function<void(vector<webhdfs::FileStatus> &)> &callback);
+	//! A file path lists the file itself (with an empty path_suffix). A missing path throws, or with `missing_ok`
+	//! returns false.
+	bool ListStatus(const string &path, const std::function<void(vector<webhdfs::FileStatus> &)> &callback,
+	                bool missing_ok = false);
+	//! List a directory's children page by page, with no separate GETFILESTATUS in the usual case. Returns false
+	//! (listing nothing) when the path does not exist or is a file.
+	bool TryListDirectory(const string &path, const std::function<void(vector<webhdfs::FileStatus> &)> &callback);
 	bool Mkdirs(const string &path, const string &permission = "");
 	bool Delete(const string &path, bool recursive);
 	bool Rename(const string &source, const string &destination);

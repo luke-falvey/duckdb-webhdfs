@@ -89,6 +89,9 @@ WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener
                                    const webhdfs::WebHdfsUrl &url, const webhdfs::HadoopConfig &site,
                                    const WebHdfsSettings &settings);
 
+//! The authorities (cluster names and aliases) that `webhdfs` secret scopes name for `scheme`, lowercased
+vector<string> WebHdfsSecretAuthorities(DatabaseInstance &db, optional_ptr<FileOpener> opener, const string &scheme);
+
 //! The OS user name (fallback identity for simple authentication)
 string CurrentOsUser();
 

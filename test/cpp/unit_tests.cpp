@@ -415,6 +415,52 @@ TEST(json_file_status_times) {
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775807}})", status, error));
 	CHECK(error.find("modificationTime") != std::string::npos);
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","accessTime":-9223372036854775807}})", status, error));
+	// the bounds are DuckDB's TIMESTAMP range, which is not symmetric
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372022400000}})", status, error));
+	CHECK_EQ(status.modification_time, MIN_EPOCH_MS);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372022400001}})", status, error));
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372036854774}})", status, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854774}})", status, error));
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775}})", status, error));
+}
+
+TEST(xattr_hex_values) {
+	std::string bytes;
+	CHECK(DecodeHex("0x626c7565", bytes));
+	CHECK_EQ(bytes, "blue");
+	CHECK(DecodeHex("0X00FF", bytes));
+	CHECK_EQ(bytes, std::string("\x00\xff", 2));
+	CHECK(DecodeHex("", bytes));
+	CHECK_EQ(bytes, "");
+	// strtol would accept a sign or leading whitespace in a pair
+	CHECK(!DecodeHex("0x-1", bytes));
+	CHECK(!DecodeHex("0x+f", bytes));
+	CHECK(!DecodeHex("0x f", bytes));
+	CHECK(!DecodeHex("0xabc", bytes));
+	CHECK(!DecodeHex("0xzz", bytes));
+}
+
+TEST(walk_order) {
+	// directories sort as "name/", so a depth-first walk lists full paths in byte order
+	std::vector<std::pair<std::string, bool>> children = {{"a", true},  {"a.csv", false}, {"a-b", true},
+	                                                      {"b", false}, {"ab", true},     {"\xc3\xbc", false}};
+	std::sort(children.begin(), children.end(),
+	          [](const std::pair<std::string, bool> &x, const std::pair<std::string, bool> &y) {
+		          return WalkOrderLess(x.first, x.second, y.first, y.second);
+	          });
+	std::vector<std::string> order;
+	for (auto &child : children) {
+		order.push_back(child.first + (child.second ? "/" : ""));
+	}
+	auto sorted = order;
+	std::sort(sorted.begin(), sorted.end());
+	CHECK(order == sorted);
+	CHECK_EQ(order[0], "a-b/");
+	CHECK_EQ(order[1], "a.csv");
+	CHECK_EQ(order[2], "a/");
+	CHECK(!WalkOrderLess("x", true, "x", true));
+	CHECK(WalkOrderLess("x", false, "x-", false));
+	CHECK(WalkOrderLess("x-", false, "x", true));
 }
 
 TEST(json_checked_integers) {
@@ -500,12 +546,13 @@ TEST(json_misc) {
 static bool PageThrough(const std::vector<std::string> &pages, std::string &error) {
 	std::string start_after;
 	bool first = true;
+	std::unordered_set<std::string> seen;
 	for (auto &body : pages) {
 		std::vector<FileStatus> list;
 		int64_t remaining = 0;
 		CHECK(ParseFileStatusList(body, list, remaining, error));
 		auto last = list.empty() ? std::string() : list.back().path_suffix;
-		if (!ListingPageAdvances(first, start_after, list.size(), last, remaining, error)) {
+		if (!ListingPageAdvances(first, seen, list.size(), last, remaining, error)) {
 			return false;
 		}
 		first = false;
@@ -536,7 +583,10 @@ TEST(liststatus_batch_paging) {
 	CHECK(PageThrough({BatchPage({""}, 0)}, error));
 	// the second page repeats the first page's last name: would request the same page forever
 	CHECK(!PageThrough({BatchPage({"a", "b"}, 2), BatchPage({"b"}, 1), BatchPage({"b"}, 1)}, error));
-	CHECK(error.find("repeats the previous page, which ended at \"b\"") != std::string::npos);
+	CHECK(error.find("the page ending at \"b\" repeats an earlier page") != std::string::npos);
+	// a server that alternates between two pages: each repeats the page before the previous one
+	CHECK(!PageThrough({BatchPage({"a"}, 1), BatchPage({"b"}, 1), BatchPage({"a"}, 1), BatchPage({"b"}, 1)}, error));
+	CHECK(error.find("the page ending at \"a\" repeats an earlier page") != std::string::npos);
 	// an empty page while entries remain
 	CHECK(!PageThrough({BatchPage({"a"}, 3), BatchPage({}, 3)}, error));
 	CHECK(error.find("empty page with 3 entries remaining") != std::string::npos);

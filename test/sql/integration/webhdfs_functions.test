@@ -84,6 +84,32 @@ SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/{..,sub}/*');
 ----
 is not allowed as a glob pattern component
 
+# the listing schema (webhdfs_ls and webhdfs_stat share it)
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_stat('webhdfs://localhost:9870/test/data/people.csv'));
+----
+path	VARCHAR
+name	VARCHAR
+type	VARCHAR
+size	BIGINT
+owner	VARCHAR
+group	VARCHAR
+permissions	VARCHAR
+mode	USMALLINT
+replication	INTEGER
+block_size	BIGINT
+last_modified	TIMESTAMP WITH TIME ZONE
+last_accessed	TIMESTAMP WITH TIME ZONE
+file_id	BIGINT
+children_num	BIGINT
+storage_policy	INTEGER
+ec_policy	VARCHAR
+
+query I
+SELECT count(*) FROM ((SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_stat('webhdfs://localhost:9870/test/data'))) EXCEPT ALL (SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data'))));
+----
+0
+
 # calls that differ only in named parameters are different calls
 query II
 SELECT (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data')), (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data', include_hidden := true));
@@ -133,6 +159,16 @@ SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data
 ----
 1
 
+statement error
+SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', "offset" := -1);
+----
+offset and length must not be negative
+
+statement error
+SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', length := -10);
+----
+offset and length must not be negative
+
 query II
 SELECT algorithm LIKE 'MD5-of-%', length FROM webhdfs_checksum('webhdfs://localhost:9870/test/data/people.csv');
 ----
@@ -158,6 +194,17 @@ query TT
 SELECT name, decode(value) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := ['user.color']);
 ----
 user.color	blue
+
+# an empty name filter selects no attributes (GETXATTRS without a name returns them all)
+query I
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := []);
+----
+0
+
+query I
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := [NULL]);
+----
+0
 
 query TT
 SELECT name, storage_types FROM webhdfs_storage_policy('webhdfs://localhost:9870/test');

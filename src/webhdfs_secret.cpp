@@ -90,10 +90,24 @@ static void ValidateNameNodes(const Value &namenodes) {
 	}
 }
 
+//! A scope that no webhdfs:// or swebhdfs:// URL can match (e.g. 'hdfs://prod' or 'prod') would leave the secret unused
+static void ValidateScope(const string &scope) {
+	auto lower = StringUtil::Lower(scope);
+	for (auto scheme : {"webhdfs://", "swebhdfs://"}) {
+		if (StringUtil::StartsWith(lower, scheme) || StringUtil::StartsWith(scheme, lower)) {
+			return;
+		}
+	}
+	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://'", scope);
+}
+
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	auto scope = input.scope;
 	if (scope.empty()) {
 		scope = {"webhdfs://", "swebhdfs://"};
+	}
+	for (auto &entry : scope) {
+		ValidateScope(entry);
 	}
 	auto secret = make_uniq<WebHdfsSecret>(scope, input.type, input.provider, input.name);
 	secret->redact_keys = {Identifier("delegation_token")};
@@ -129,7 +143,15 @@ static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &conte
 		} else if (name == "use_ssl") {
 			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::BOOLEAN);
 		} else if (name == "replication" || name == "block_size") {
-			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::BIGINT);
+			auto number = value.DefaultCastAs(LogicalType::BIGINT);
+			auto n = number.GetValue<int64_t>();
+			// HDFS stores the replication factor as a Java short
+			int64_t max = name == "replication" ? NumericLimits<int16_t>::Maximum() : NumericLimits<int64_t>::Maximum();
+			if (n <= 0 || n > max) {
+				throw InvalidInputException("webhdfs secret: %s must be between 1 and %lld, not %lld",
+				                            StringUtil::Upper(name), max, n);
+			}
+			secret->secret_map[Identifier(name)] = std::move(number);
 		} else {
 			// the binder rejects options that are not in named_parameters before this function runs
 			throw InternalException("webhdfs secret: option '%s' is registered but not handled", name);

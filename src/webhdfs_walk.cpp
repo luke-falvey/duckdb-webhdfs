@@ -10,12 +10,17 @@ using webhdfs::FileStatus;
 
 static constexpr idx_t PREFETCH_WINDOW_PER_THREAD = 4;
 
-WebHdfsWalk::WebHdfsWalk(shared_ptr<WebHdfsClient> client_p, const string &path_pattern, WebHdfsWalkOptions options_p)
+WebHdfsWalk::WebHdfsWalk(shared_ptr<WebHdfsClient> client_p, const string &path_pattern, WebHdfsWalkOptions options_p,
+                         optional_ptr<const FileStatus> root_status_p)
     : client(std::move(client_p)), options(options_p) {
 	try {
 		pattern = webhdfs::GlobPattern::Compile(path_pattern, options.include_hidden);
 	} catch (webhdfs::GlobError &e) {
 		throw InvalidInputException("Invalid WebHDFS glob pattern \"%s\": %s", client->UrlFor(path_pattern), e.what());
+	}
+	if (root_status_p && pattern.IsLiteral()) {
+		has_root_status = true;
+		root_status = *root_status_p;
 	}
 }
 
@@ -39,8 +44,8 @@ void WebHdfsWalk::Start() {
 	started = true;
 	auto &root = pattern.Root();
 	if (pattern.IsLiteral() || pattern.MatchesRoot()) {
-		FileStatus status;
-		bool exists = client->TryGetFileStatus(root, status);
+		FileStatus status = root_status;
+		bool exists = has_root_status || client->TryGetFileStatus(root, status);
 		if (exists) {
 			if (pattern.IsLiteral() && status.is_dir && !options.files_only) {
 				// a plain directory: list its children
@@ -188,8 +193,11 @@ void WebHdfsWalk::Expand(Item &item) {
 	}
 	auto entries = std::move(listing.entries);
 	listing.entries.clear();
-	std::sort(entries.begin(), entries.end(),
-	          [](const FileStatus &a, const FileStatus &b) { return a.path_suffix < b.path_suffix; });
+	// A directory sorts as "name/", so the depth-first walk yields full paths in byte order ("a-b/y" before "a/x"):
+	// the order of DuckDB's own sort of each batch, whatever the batch boundaries.
+	std::sort(entries.begin(), entries.end(), [](const FileStatus &a, const FileStatus &b) {
+		return webhdfs::WalkOrderLess(a.path_suffix, a.is_dir, b.path_suffix, b.is_dir);
+	});
 	bool synthesized = item.probe;
 	bool list_directory = pattern.IsLiteral();
 	// push in reverse so the smallest name is walked first
@@ -240,6 +248,19 @@ void WebHdfsWalk::Expand(Item &item) {
 }
 
 bool WebHdfsWalk::Next(vector<WebHdfsWalkEntry> &out, idx_t max_entries) {
+	// The item that failed is gone from the stack: carrying on would silently drop its subtree
+	if (failure) {
+		std::rethrow_exception(failure);
+	}
+	try {
+		return NextInternal(out, max_entries);
+	} catch (...) {
+		failure = std::current_exception();
+		throw;
+	}
+}
+
+bool WebHdfsWalk::NextInternal(vector<WebHdfsWalkEntry> &out, idx_t max_entries) {
 	unique_lock<mutex> guard(lock);
 	if (!started) {
 		guard.unlock();

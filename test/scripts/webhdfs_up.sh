@@ -44,6 +44,9 @@ rm -rf "$FIXTURES" && mkdir -p "$FIXTURES/hive"
 COPY (SELECT range AS id, 'name_' || range AS name FROM range(5)) TO '$FIXTURES/people.csv';
 COPY (SELECT range AS id, range * 2 AS doubled, 'value_' || range AS label FROM range(100000))
   TO '$FIXTURES/numbers.parquet';
+-- many small row groups, so that several threads scan one file at once
+COPY (SELECT range AS id, 'label_' || lpad(range::VARCHAR, 12, '0') AS label FROM range(30000))
+  TO '$FIXTURES/row_groups.parquet' (ROW_GROUP_SIZE 2048);
 COPY (SELECT range AS id, 'nested' AS source FROM range(3)) TO '$FIXTURES/nested.csv';
 COPY (SELECT range AS id, 'deeper' AS source FROM range(2)) TO '$FIXTURES/deeper.csv';
 COPY (SELECT 1 AS a, 'x' AS b UNION ALL SELECT 2, 'y') TO '$FIXTURES/records.json';
@@ -82,6 +85,12 @@ hdfs dfs -chown alice /user/alice
 hdfs dfs -put "$F/people.csv" /test/quota/
 hdfs dfsadmin -setQuota 100 /test/quota
 hdfs dfsadmin -setSpaceQuota 1g /test/quota
+# sibling names around "/" in byte order (a-b/ < a.csv < a/): the walk must list full paths in that order
+hdfs dfs -mkdir -p /test/order/a /test/order/a-b /test/rg
+hdfs dfs -put "$F/people.csv" /test/order/a/x.csv
+hdfs dfs -put "$F/people.csv" /test/order/a-b/y.csv
+hdfs dfs -put "$F/people.csv" /test/order/a.csv
+hdfs dfs -put "$F/row_groups.parquet" /test/rg/
 hdfs dfs -put "$F/people.csv" /test/snap/
 hdfs dfsadmin -allowSnapshot /test/snap > /dev/null
 hdfs dfs -createSnapshot /test/snap s1 > /dev/null

@@ -60,14 +60,28 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
-	// database-wide: the cache it sizes is shared by every session, so a session-local SET must not resize it
+	// global-only (see Register): read it without the opener
 	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
 		settings.small_file_cache_size = value.GetValue<uint64_t>();
 	}
 	return settings;
 }
 
-void WebHdfsSettings::Register(DatabaseInstance &db) {
+namespace {
+//! Applies a new webhdfs_small_file_cache_size to the caches right away, not only when a cluster is next used
+struct CacheSizeOptionInfo : public ExtensionOptionInfo {
+	explicit CacheSizeOptionInfo(std::function<void(idx_t)> apply_p) : apply(std::move(apply_p)) {
+	}
+	void OnSet(ClientContext &context, SetScope scope, Value &parameter, bool is_reset) const override {
+		if (apply && !parameter.IsNull()) {
+			apply(parameter.GetValue<uint64_t>());
+		}
+	}
+	std::function<void(idx_t)> apply;
+};
+} // namespace
+
+void WebHdfsSettings::Register(DatabaseInstance &db, std::function<void(idx_t)> on_cache_size) {
 	auto &config = DBConfig::GetConfig(db);
 	config.AddExtensionOption(LIST_PARALLELISM,
 	                          "Maximum number of concurrent WebHDFS directory listings in globs and recursive "
@@ -97,12 +111,15 @@ void WebHdfsSettings::Register(DatabaseInstance &db) {
 	                          "User name for WebHDFS simple authentication when no webhdfs secret sets one (default: "
 	                          "HADOOP_USER_NAME, else the OS user)",
 	                          LogicalType::VARCHAR, Value());
-	config.AddExtensionOption(
-	    SMALL_FILE_CACHE_SIZE,
-	    "Bytes of small WebHDFS files (read whole) kept in memory per cluster, so a file opened "
-	    "again (e.g. at bind time and to scan it) is not fetched twice; 0 disables the cache. Database-wide: "
-	    "set it with SET GLOBAL",
-	    LogicalType::UBIGINT, Value::UBIGINT(DEFAULT_SMALL_FILE_CACHE_SIZE));
+	// database-wide (the cache is shared by every session): a plain SET sets it globally, SET SESSION is an error
+	ExtensionOption cache_size("Bytes of small WebHDFS files (read whole) kept in memory per cluster, so a file "
+	                           "opened again (e.g. at bind time and to scan it) is not fetched twice; 0 disables the "
+	                           "cache. Database-wide",
+	                           LogicalType::UBIGINT, nullptr, Value::UBIGINT(DEFAULT_SMALL_FILE_CACHE_SIZE),
+	                           SetScope::GLOBAL, false, false);
+	cache_size.supports_session = false;
+	cache_size.info = make_shared_ptr<CacheSizeOptionInfo>(std::move(on_cache_size));
+	config.AddExtensionOption(SMALL_FILE_CACHE_SIZE, std::move(cache_size));
 }
 
 //===--------------------------------------------------------------------===//
@@ -183,9 +200,12 @@ vector<std::pair<string, string>> WebHdfsConfig::AuthParams(const string &kerber
 
 string CurrentOsUser() {
 #ifndef _WIN32
-	auto pw = getpwuid(geteuid());
-	if (pw && pw->pw_name) {
-		return pw->pw_name;
+	// getpwuid_r: clients are created on many threads at once
+	struct passwd pwd;
+	struct passwd *found = nullptr;
+	vector<char> buffer(16384);
+	if (getpwuid_r(geteuid(), &pwd, buffer.data(), buffer.size(), &found) == 0 && found && found->pw_name) {
+		return found->pw_name;
 	}
 	const char *user = std::getenv("USER");
 #else

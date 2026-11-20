@@ -107,7 +107,7 @@ shell, see §2), it is already loaded and both steps do nothing.
 | Parameters | One `HTTPParams` per filesystem call, from `InitializeParameters(opener, {file_path = original webhdfs:// URL})`, so `http` secrets can be scoped to WebHDFS URLs. Set `access_path` to the `webhdfs://` URL so the file-access check sees the user's path. |
 | Redirects | Set `follow_location = false` on NameNode calls, then read `Location` from the `307` response and make the DataNode call ourselves (see §3). |
 | Errors | Set `try_request = true` so we see non-2xx bodies and can turn the Hadoop `RemoteException` JSON into a DuckDB exception (see §6). |
-| Retries | Use httpfs retries for idempotent ops (GET, PUT `CREATE`, DELETE, `RENAME`, `MKDIRS`). For `POST APPEND` to a DataNode, set `retries = 0`: replaying it could duplicate data. |
+| Retries | Core retries every request but POST (`HTTPUtil::IsIdempotent`). `POST APPEND` is never replayed. GET, `MKDIRS` and `RENAME` (with the replay check in `MoveFile`) are safe to replay. `DELETE` and `CREATE` with `overwrite=false` are not idempotent in effect: a replay after a lost response answers `false` / `FileAlreadyExists` for an operation that succeeded. That is open (docs/REVIEW_QUORUM_ROUND2.md, O1). |
 | Client reuse | Keep one `unique_ptr<HTTPClient>` per open file handle, so sequential reads reuse a single keep-alive connection, and return it with `CloseClient` when the handle closes. Metadata calls use the shared pool. |
 
 ## 2. Source layout
@@ -161,7 +161,7 @@ Build changes:
 | `Read(handle, buf, n, offset)` | `GET P?op=OPEN&offset=&length=` to the NameNode → `307` → `GET <Location>` on the DataNode, streamed into the caller's buffer through `content_handler`. Behind a gateway, the first response is already `200` with the data. |
 | `GetFileSize`, `GetLastModifiedTime`, `GetVersionTag` | Values cached on the handle. The version tag is `"<mtime>:<length>"`, as in the hdfs extension, so the external file cache can validate reads without another request. |
 | `OpenFile` (write) | Nothing yet. The file is created on the first flush (see Writes). |
-| `Write` / `Close` | Buffer, then `PUT ?op=CREATE&overwrite=true` → `307` → `PUT <Location>` with the body. Later chunks: `POST ?op=APPEND` → `307` → `POST <Location>` with the body. |
+| `Write` / `Close` | Buffer, then `PUT ?op=CREATE&overwrite=true` (`overwrite=false` for `EXCLUSIVE_CREATE` and `NULL_IF_EXISTS`, which COPY uses for new files) → `307` → `PUT <Location>` with the body. Later chunks: `POST ?op=APPEND` → `307` → `POST <Location>` with the body. |
 | `FILE_FLAGS_APPEND` | Every flush is an `APPEND`. |
 | `FileExists` / `DirectoryExists` | `GETFILESTATUS`. A `FileNotFoundException` means false. |
 | `CreateDirectory[Extended]` | `PUT ?op=MKDIRS`. It returns `{"boolean":…}` and creates parents. To report "created by this call" for `CreateDirectoryExtended`, stat first. |
@@ -320,9 +320,11 @@ The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
   `key=value` partition level, which is what §5c uses for pruning.
 - **`WebHdfsListStream`.** A background walk has a
   bounded queue of pending directories and up to `webhdfs_list_parallelism`
-  `LISTSTATUS_BATCH` requests in flight on worker threads. Entries stream to
-  `Next()` in completion order, and `LISTSTATUS_BATCH` pages are queued as
-  continuation items. Retry rules are the same: a connection failure retries
+  `LISTSTATUS_BATCH` requests in flight on worker threads. Entries come out of
+  `Next()` depth-first with each directory's children sorted (a directory as
+  `name/`), i.e. in byte order of the full paths, whatever order the listings
+  finish in; workers only prefetch. A directory is listed whole (all pages)
+  before its entries are handed out. Retry rules are the same: a connection failure retries
   transparently only before any entry has been handed out.
 - **Settings.** The names match the hdfs extension's, with the prefix swapped:
 

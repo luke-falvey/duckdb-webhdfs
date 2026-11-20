@@ -95,6 +95,9 @@ private:
 	bool include_hidden = false;
 };
 
+//! Order of the children of one directory in a walk: by name, a directory's name followed by '/', bytes unsigned.
+//! Depth-first output is then in byte order of the full paths.
+bool WalkOrderLess(const std::string &a, bool a_is_dir, const std::string &b, bool b_is_dir);
 //! Hadoop-style hidden name: starts with '.' or '_'.
 bool IsHiddenName(const std::string &name);
 //! True if the text contains an unescaped `*`, `?`, `[` or `{`.

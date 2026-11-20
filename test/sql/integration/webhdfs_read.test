@@ -77,6 +77,22 @@ SELECT count(DISTINCT label), sum(id % 7) FROM 'webhdfs://localhost:9870/test/da
 ----
 100000	299995
 
+# several threads reading one handle at once: a file with many row groups, at several read-ahead sizes
+foreach bufsize 0 7 65536 1000000
+
+statement ok
+SET webhdfs_read_buffer_size = {bufsize};
+
+query III
+SELECT count(*), sum(id), count(DISTINCT label) FROM 'webhdfs://localhost:9870/test/rg/row_groups.parquet';
+----
+30000	449985000	30000
+
+endloop
+
+statement ok
+RESET webhdfs_read_buffer_size;
+
 # no read-ahead and no redirect reuse give the same result
 statement ok
 SET webhdfs_read_buffer_size = 0;
@@ -228,6 +244,42 @@ SELECT list(parse_filename(file)) = list_sort(list(parse_filename(file))) FROM g
 ----
 true
 
+# across sibling directories too: full paths in byte order ("a-b/" < "a.csv" < "a/"), however many listings are in
+# flight, so DuckDB's sort of each batch of files changes nothing and the first file (the one the schema is bound
+# from) is always the same
+foreach parallelism 1 16
+
+statement ok
+SET webhdfs_list_parallelism = {parallelism};
+
+query I
+SELECT list(replace(file, 'webhdfs://localhost:9870/test/order/', '')) FROM glob('webhdfs://localhost:9870/test/order/**/*.csv');
+----
+[a-b/y.csv, a.csv, a/x.csv]
+
+query I
+SELECT list(replace(file, 'webhdfs://localhost:9870/test/order/', '')) FROM glob('webhdfs://localhost:9870/test/order/*/*.csv');
+----
+[a-b/y.csv, a/x.csv]
+
+endloop
+
+statement ok
+RESET webhdfs_list_parallelism;
+
+statement ok
+SET threads = 1;
+
+query T
+SELECT replace(filename, 'webhdfs://localhost:9870/test/order/', '') FROM read_csv('webhdfs://localhost:9870/test/order/**/*.csv', filename = true) WHERE id = 0;
+----
+a-b/y.csv
+a.csv
+a/x.csv
+
+statement ok
+RESET threads;
+
 # Hive partitioned data
 query II
 SELECT count(*), sum(id) FROM read_parquet('webhdfs://localhost:9870/test/hive/*/*/*.parquet', hive_partitioning = true) WHERE year = '2023' AND month = '5';
@@ -261,6 +313,12 @@ query I
 SELECT count(*) FROM glob('webhdfs://localhost:14000/test/many/*');
 ----
 200
+
+# a file's last_modified is the same whether it comes from a listing (glob) or from GETFILESTATUS
+query II
+SELECT (SELECT last_modified FROM read_blob('webhdfs://localhost:9870/test/data/people.csv')) = s.last_modified, (SELECT last_modified FROM read_blob('webhdfs://localhost:9870/test/data/peo*.csv')) = s.last_modified FROM webhdfs_stat('webhdfs://localhost:9870/test/data/people.csv') s;
+----
+true	true
 
 # allowed_directories applies to the path that is requested: '..' is resolved before the check
 # (keep this last: external access cannot be re-enabled)

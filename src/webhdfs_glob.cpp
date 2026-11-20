@@ -6,6 +6,26 @@ namespace webhdfs {
 
 static constexpr size_t MAX_BRACE_EXPANSIONS = 4096;
 
+bool WalkOrderLess(const std::string &a, bool a_is_dir, const std::string &b, bool b_is_dir) {
+	// std::string compares bytes as unsigned char, like the sort of full paths
+	auto common = std::min(a.size(), b.size());
+	auto cmp = a.compare(0, common, b, 0, common);
+	if (cmp != 0) {
+		return cmp < 0;
+	}
+	// one name is a prefix of the other: the next character is '/' for a directory, or the end for a file
+	auto next = [](const std::string &name, bool is_dir, size_t pos) -> int {
+		if (pos < name.size()) {
+			return static_cast<unsigned char>(name[pos]);
+		}
+		return is_dir ? '/' : -1;
+	};
+	if (a.size() == b.size()) {
+		return !a_is_dir && b_is_dir;
+	}
+	return next(a, a_is_dir, common) < next(b, b_is_dir, common);
+}
+
 bool IsHiddenName(const std::string &name) {
 	return !name.empty() && (name[0] == '.' || name[0] == '_');
 }

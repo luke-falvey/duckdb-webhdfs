@@ -15,11 +15,12 @@ class WebHdfsFileHandle : public FileHandle {
 public:
 	WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpenFlags flags, shared_ptr<WebHdfsClient> client,
 	                  string hdfs_path);
-	//! A writer that was neither closed nor aborted is abandoned: it is aborted, never committed
+	//! A writer that was neither closed nor aborted is committed (Close) unless an exception is unwinding or a request
+	//! failed; then it is aborted. Errors never escape.
 	~WebHdfsFileHandle() override;
 
-	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle stays
-	//! open so that Abort() can still remove the file.
+	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle is marked
+	//! failed but stays open, so that Abort() can still remove the file.
 	void Close() override;
 	//! Send buffered writes
 	void Flush();
@@ -75,6 +76,11 @@ public:
 	                                       webhdfs::WebHdfsUrl &parsed);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
+	//! Resize the small-file cache of every cluster in use (webhdfs_small_file_cache_size)
+	void SetSmallFileCacheSize(idx_t bytes);
+	//! The configuration a request to endpoint `key` (scheme://authority) would use for the caller of `opener`;
+	//! false if it can't be resolved (e.g. an invalid secret)
+	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
 	DatabaseInstance &GetDatabase() {
@@ -133,7 +139,9 @@ public:
 		return "WebHdfsFileSystem";
 	}
 
-	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime and type travel with it
+	//! The version tag of a file with this mtime and length (GetVersionTag, and the "etag" of a listed file)
+	static string VersionTag(int64_t modification_time_ms, idx_t length);
+	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime, type and etag travel with it
 	static OpenFileInfo MakeOpenFileInfo(const string &url, const webhdfs::FileStatus &status);
 
 protected:

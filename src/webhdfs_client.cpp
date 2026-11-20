@@ -64,9 +64,6 @@ void WebHdfsEndpoint::MarkFailed(const string &namenode, const string &state, co
 
 void WebHdfsEndpoint::RecordConfig(const WebHdfsConfig &config) {
 	lock_guard<mutex> guard(lock);
-	auth_mode = AuthModeToString(config.auth);
-	namenode_source = config.namenode_source;
-	secret_name = config.secret_name;
 	for (auto &nn : config.namenodes) {
 		if (namenodes.find(nn) == namenodes.end()) {
 			order.push_back(nn);
@@ -85,9 +82,6 @@ WebHdfsEndpoint::Snapshot WebHdfsEndpoint::GetSnapshot() {
 	snapshot.active = active;
 	snapshot.datanode_requests = datanode_requests.load();
 	snapshot.batch_listing = batch_listing.load();
-	snapshot.auth_mode = auth_mode;
-	snapshot.namenode_source = namenode_source;
-	snapshot.secret_name = secret_name;
 	return snapshot;
 }
 
@@ -512,7 +506,15 @@ WebHdfsHttpResult WebHdfsClient::NameNodeCall(RequestType type, const string &op
 			return result;
 		}
 	}
-	throw IOException("WebHDFS %s on \"%s\": no NameNode could serve the request:%s", op, UrlFor(path), failures);
+	string hint;
+	if (config.namenode_source == "url" && url.port == 0) {
+		hint =
+		    StringUtil::Format(" (if \"%s\" is an HA nameservice, set HADOOP_CONF_DIR to its client configuration or "
+		                       "create a webhdfs secret with its NAMENODES)",
+		                       url.host);
+	}
+	throw IOException("WebHDFS %s on \"%s\": no NameNode could serve the request%s:%s", op, UrlFor(path), hint,
+	                  failures);
 }
 
 WebHdfsHttpResult WebHdfsClient::DataNodeCall(RequestType type, const string &request_url, const_data_ptr_t data,
@@ -555,6 +557,7 @@ bool WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 	if (endpoint.batch_listing.load() != 0) {
 		string start_after;
 		bool first = true;
+		std::unordered_set<string> seen_last_names;
 		while (true) {
 			vector<std::pair<string, string>> query;
 			if (!start_after.empty()) {
@@ -581,7 +584,7 @@ bool WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 				throw IOException("WebHDFS LISTSTATUS_BATCH on \"%s\": %s", UrlFor(path), error);
 			}
 			auto page_last = entries.empty() ? string() : entries.back().path_suffix;
-			if (!webhdfs::ListingPageAdvances(first, start_after, entries.size(), page_last, remaining, error)) {
+			if (!webhdfs::ListingPageAdvances(first, seen_last_names, entries.size(), page_last, remaining, error)) {
 				throw IOException("WebHDFS LISTSTATUS_BATCH on \"%s\" did not advance: %s", UrlFor(path), error);
 			}
 			first = false;

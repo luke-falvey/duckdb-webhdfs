@@ -182,7 +182,7 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
 | `webhdfs_read_buffer_size` | 1 MiB | Minimum read size; small sequential reads fetch this much ahead. 0 turns read-ahead off. |
 | `webhdfs_write_chunk_size` | 64 MiB | Data buffered per file being written before it is sent. |
 | `webhdfs_reuse_redirects` | true | Reuse a file's DataNode redirect for later reads of it. |
-| `webhdfs_small_file_cache_size` | 64 MiB | Memory per cluster for whole small files (see Performance notes). 0 turns the cache off. |
+| `webhdfs_small_file_cache_size` | 64 MiB | Memory per cluster for whole small files (see Performance notes). 0 turns the cache off. Database-wide: use `SET GLOBAL`. |
 | `webhdfs_user_name` | (unset) | User for simple authentication when no secret sets one. |
 
 ## Autocomplete
@@ -217,11 +217,12 @@ listing or for httpfs's timeout; the shell then just offers nothing.
 - Files can't be written at arbitrary offsets or truncated (HDFS is append-only). A chunk that fails to `CREATE` or
   `APPEND` is not re-sent (the server may already have applied it); the write fails and the handle refuses further
   writes.
-- A failed or interrupted write deletes the file it created; it is never committed from a destructor. With
-  `COPY ... TO` over an existing file, DuckDB writes a temporary file and renames it over the target (an atomic
-  `RENAME` with `renameoptions=OVERWRITE`; HttpFS gateways that lack the option fall back to delete-then-rename),
-  so the original survives a failure. With `USE_TMP_FILE false`, a failed overwrite leaves no file. An aborted
-  append to an existing file is not rolled back.
+- A write that fails, or whose handle is destroyed while an error unwinds, deletes the file it created. (A handle
+  closed normally, or dropped without an error, commits, as local files do.) With `COPY ... TO` over an existing
+  file, DuckDB writes a temporary file and renames it over the target (an atomic `RENAME` with
+  `renameoptions=OVERWRITE`; HttpFS gateways that lack the option fall back to delete-then-rename), so the original
+  survives a failure. With `USE_TMP_FILE false`, a failed overwrite can leave an incomplete file. An aborted append
+  to an existing file is not rolled back.
 - Partition filters don't reduce listing (see above).
 - Writes buffer up to `webhdfs_write_chunk_size` per open file; `PARTITION_BY` with many open partitions multiplies
   that.

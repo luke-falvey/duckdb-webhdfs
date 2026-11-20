@@ -217,8 +217,8 @@ stream, so:
   A failure leaves the file truncated and raises a clear error. DuckDB's
   `COPY … TO` writes then renames in some modes, so a partial file won't be
   mistaken for success.
-- Close order: flush the remainder, then mark the handle closed. (Superseded:
-  a destructor never commits; an unclosed writer is aborted. See §10.)
+- Close order: flush the remainder, then mark the handle closed. (Refined: a
+  destructor commits only when no error is unwinding. See §10.)
 - Later improvement: on HttpFS gateways, a single PUT with `data=true` and
   `Content-Type: application/octet-stream` saves the redirect round trip.
 
@@ -715,8 +715,9 @@ implementation differs from this plan:
   share them.
 - **Writes.** Buffers are plain byte vectors (not the `Allocator`), outside
   `memory_limit`. A failed `CREATE`/`APPEND` is never re-sent; the handle is
-  marked failed. An unclosed writer is aborted (the file it created is
-  deleted), never committed from the destructor. `ExclusiveCreate` sends
+  marked failed. A writer destroyed during exception unwinding or after a
+  failure is aborted (the file it created is deleted); one dropped normally
+  without `Close()` (as `EXPORT DATABASE` does) still commits. `ExclusiveCreate` sends
   `overwrite=false`. `MoveFile` uses `RENAME` with `renameoptions=OVERWRITE`
   (atomic on the NameNode) and falls back to delete-then-rename only where the
   server rejects the option (HttpFS).

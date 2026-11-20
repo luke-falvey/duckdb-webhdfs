@@ -25,12 +25,21 @@ WebHdfsFileHandle::WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpe
 }
 
 WebHdfsFileHandle::~WebHdfsFileHandle() {
-	// No commit from a destructor: a write handle destroyed without Close() belongs to a write that failed or was
-	// interrupted (the success paths in DuckDB close explicitly), so its buffer is dropped and a file it created is
-	// removed. Abort() swallows errors and sends a request only when there is something to remove.
-	if (!closed) {
-		Abort();
+	if (closed) {
+		return;
 	}
+	// Some core writers drop the handle without calling Close() (EXPORT DATABASE's schema.sql/load.sql, log
+	// storage), as local files allow, so a handle destroyed normally still commits its data. A handle destroyed
+	// while an exception unwinds, or after a failed request, belongs to a failed write: it is aborted instead, and
+	// a file it created is removed. Neither path lets an exception escape the destructor.
+	if (writing && !failed && !Exception::UncaughtException()) {
+		try {
+			Close();
+			return;
+		} catch (...) { // NOLINT: a destructor can't throw; fall through to the cleanup below
+		}
+	}
+	Abort();
 }
 
 void WebHdfsFileHandle::CheckWritable() const {
@@ -45,10 +54,10 @@ void WebHdfsFileHandle::CheckWritable() const {
 void WebHdfsFileHandle::SendBuffer() {
 	try {
 		if (!created) {
-			// A CREATE that replaces the target may have taken effect even if it fails part-way (the DataNode leg),
-			// so Abort() must remove the file from now on. Without overwrite the file might be someone else's
-			// (FileAlreadyExists), so it is only ours once the CREATE succeeded.
-			delete_on_abort = overwrite;
+			// The file is only ours to remove once the CREATE succeeded. A failed CREATE may have failed before the
+			// NameNode acted (standby, connection error) or on another client's lease, and the existing file then
+			// belongs to someone else. A CREATE that replaced the target and failed on the DataNode leg leaves an
+			// incomplete file behind instead.
 			client->Create(hdfs_path, write_buffer.data(), write_buffer.size(), overwrite);
 			created = true;
 			delete_on_abort = true;
@@ -552,6 +561,12 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 	// RENAME with renameoptions=OVERWRITE runs the NameNode's rename2: one request that replaces a file target
 	// atomically (what StorageManager and COPY ... USE_TMP_FILE expect of MoveFile) and fails for a directory
 	// target, where the old rename would move the source into the directory.
+	// The source's status first: a missing source is an error, and its length tells a replayed RENAME (source moved
+	// by an earlier attempt whose response was lost) from an old target that was already there.
+	FileStatus source_status;
+	if (!client->TryGetFileStatus(source_url.path, source_status)) {
+		throw IOException("Could not move \"%s\": No such file or directory", source);
+	}
 	auto outcome = client->RenameOverwrite(source_url.path, target_url.path);
 	switch (outcome) {
 	case WebHdfsRenameOutcome::RENAMED:
@@ -574,7 +589,8 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 	FileStatus status;
 	if (!client->TryGetFileStatus(source_url.path, status)) {
 		FileStatus target_status;
-		if (client->TryGetFileStatus(target_url.path, target_status) && !target_status.is_dir) {
+		if (client->TryGetFileStatus(target_url.path, target_status) && !target_status.is_dir &&
+		    target_status.is_dir == source_status.is_dir && target_status.length == source_status.length) {
 			return;
 		}
 		throw IOException("Could not move \"%s\": No such file or directory", source);

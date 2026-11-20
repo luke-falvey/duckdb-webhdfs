@@ -102,7 +102,7 @@ RESET webhdfs_reuse_redirects;
 
 # with the small-file cache off, small files read whole are fetched again on every open, with the same result
 statement ok
-SET webhdfs_small_file_cache_size = 0;
+SET GLOBAL webhdfs_small_file_cache_size = 0;
 
 query II
 SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
@@ -117,7 +117,7 @@ SELECT * FROM 'webhdfs://localhost:9870/test/data/records.json' ORDER BY a;
 
 # a cache smaller than the file: nothing is cached
 statement ok
-SET webhdfs_small_file_cache_size = 10;
+SET GLOBAL webhdfs_small_file_cache_size = 10;
 
 query II
 SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
@@ -125,7 +125,7 @@ SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/peopl
 5	10
 
 statement ok
-RESET webhdfs_small_file_cache_size;
+RESET GLOBAL webhdfs_small_file_cache_size;
 
 # globbing: hidden entries (_SUCCESS, _temporary.csv, .hidden.csv) are skipped
 query T

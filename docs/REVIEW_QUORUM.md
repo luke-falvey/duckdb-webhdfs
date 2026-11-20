@@ -93,3 +93,19 @@ lnkuiper: 5)
 - Redirect host and scheme policy (hannes C3).
 - Thread-pool walk outside the scheduler (hawkfish).
 - Optional CI platforms (carlopi).
+
+## Follow-up from a verification pass
+An independent bug review of the implemented fixes found these, and they were fixed:
+- **Destructor commits.** Core writers such as EXPORT DATABASE and log storage drop the handle without Close(), so
+  a destructor that always aborted lost their files. Now the destructor commits unless an exception is unwinding
+  or a request failed. Covered by a new integration test.
+- **Overwrite failures.** A failed overwrite no longer deletes a target whose CREATE never succeeded.
+- **Replayed rename.** MoveFile counts a RENAME as replayed only if the source existed beforehand and the target
+  now has the source's length.
+- **Batch paging guard.** It checks progress only. The NameNode sorts names as signed bytes, so an ordering check
+  rejected valid listings.
+- **Cache size setting.** `webhdfs_small_file_cache_size` is read from the global value only, because the cache it
+  sizes is shared by every session.
+
+Known limitation: the extension-side secret lookup doesn't skip storages whose `IncludeInLookups()` is false. Core
+has no such storage, and its storage list is private.

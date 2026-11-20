@@ -536,16 +536,16 @@ TEST(liststatus_batch_paging) {
 	CHECK(PageThrough({BatchPage({""}, 0)}, error));
 	// the second page repeats the first page's last name: would request the same page forever
 	CHECK(!PageThrough({BatchPage({"a", "b"}, 2), BatchPage({"b"}, 1), BatchPage({"b"}, 1)}, error));
-	CHECK(error.find("does not continue after \"b\"") != std::string::npos);
-	// the second page goes backwards
-	CHECK(!PageThrough({BatchPage({"a", "b"}, 2), BatchPage({"c", "a"}, 1)}, error));
+	CHECK(error.find("repeats the previous page, which ended at \"b\"") != std::string::npos);
 	// an empty page while entries remain
 	CHECK(!PageThrough({BatchPage({"a"}, 3), BatchPage({}, 3)}, error));
 	CHECK(error.find("empty page with 3 entries remaining") != std::string::npos);
 	// a nameless last entry while entries remain
 	CHECK(!PageThrough({BatchPage({""}, 5)}, error));
-	// names compare byte-wise (as HDFS sorts them): "\xc3..." sorts after "z"
+	// no ordering is assumed: the NameNode compares names as signed bytes, so non-ASCII UTF-8 names come before
+	// ASCII ones ("\xc3\xbc" < "a"), and either order across a page boundary is valid
 	CHECK(PageThrough({BatchPage({"y", "z"}, 1), BatchPage({"\xc3\xbc"}, 0)}, error));
+	CHECK(PageThrough({BatchPage({"\xc3\xbc"}, 1), BatchPage({"a"}, 0)}, error));
 }
 
 int main() {

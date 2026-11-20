@@ -60,7 +60,8 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
-	if (TryGetSetting(db, opener, SMALL_FILE_CACHE_SIZE, value)) {
+	// database-wide: the cache it sizes is shared by every session, so a session-local SET must not resize it
+	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
 		settings.small_file_cache_size = value.GetValue<uint64_t>();
 	}
 	return settings;
@@ -96,10 +97,12 @@ void WebHdfsSettings::Register(DatabaseInstance &db) {
 	                          "User name for WebHDFS simple authentication when no webhdfs secret sets one (default: "
 	                          "HADOOP_USER_NAME, else the OS user)",
 	                          LogicalType::VARCHAR, Value());
-	config.AddExtensionOption(SMALL_FILE_CACHE_SIZE,
-	                          "Bytes of small WebHDFS files (read whole) kept in memory per cluster, so a file opened "
-	                          "again (e.g. at bind time and to scan it) is not fetched twice; 0 disables the cache",
-	                          LogicalType::UBIGINT, Value::UBIGINT(DEFAULT_SMALL_FILE_CACHE_SIZE));
+	config.AddExtensionOption(
+	    SMALL_FILE_CACHE_SIZE,
+	    "Bytes of small WebHDFS files (read whole) kept in memory per cluster, so a file opened "
+	    "again (e.g. at bind time and to scan it) is not fetched twice; 0 disables the cache. Database-wide: "
+	    "set it with SET GLOBAL",
+	    LogicalType::UBIGINT, Value::UBIGINT(DEFAULT_SMALL_FILE_CACHE_SIZE));
 }
 
 //===--------------------------------------------------------------------===//

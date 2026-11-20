@@ -34,9 +34,6 @@ public:
 		string active;
 		idx_t datanode_requests = 0;
 		int batch_listing = -1;
-		string auth_mode;
-		string namenode_source;
-		string secret_name;
 	};
 
 	const string key;
@@ -49,6 +46,7 @@ public:
 	void RecordDataNodeRequest() {
 		datanode_requests++;
 	}
+	//! Add the configuration's NameNodes to the ones shown by webhdfs_namenodes()
 	void RecordConfig(const WebHdfsConfig &config);
 	Snapshot GetSnapshot();
 
@@ -84,9 +82,6 @@ private:
 	unordered_map<string, NameNodeInfo> namenodes;
 	string active;
 	std::atomic<idx_t> datanode_requests {0};
-	string auth_mode;
-	string namenode_source;
-	string secret_name;
 	struct IdentityState {
 		string kerberos_token;
 		std::chrono::steady_clock::time_point kerberos_token_expiry;

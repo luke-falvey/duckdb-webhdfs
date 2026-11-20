@@ -8,6 +8,8 @@
 #include "webhdfs_hadoop_config.hpp"
 #include "webhdfs_url.hpp"
 
+#include <functional>
+
 namespace duckdb {
 
 struct WebHdfsSettings {
@@ -36,8 +38,8 @@ struct WebHdfsSettings {
 
 	//! Current values (session settings through the opener, else global settings of `db`)
 	static WebHdfsSettings Load(optional_ptr<DatabaseInstance> db, optional_ptr<FileOpener> opener);
-	//! Register the settings on the database
-	static void Register(DatabaseInstance &db);
+	//! Register the settings on the database; `on_cache_size` applies a new small-file cache size
+	static void Register(DatabaseInstance &db, std::function<void(idx_t)> on_cache_size);
 };
 
 enum class WebHdfsAuthMode : uint8_t {

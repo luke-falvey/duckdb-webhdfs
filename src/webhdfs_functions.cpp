@@ -784,14 +784,19 @@ static unique_ptr<GlobalTableFunctionState> NameNodesInit(ClientContext &context
 	auto &bind_data = input.bind_data->Cast<NameNodesBindData>();
 	auto state = make_uniq<NameNodesState>();
 	for (auto &snapshot : bind_data.fs.EndpointSnapshots()) {
+		// auth, NameNode source and secret as this session resolves them now: they depend on its secrets
+		WebHdfsConfig config;
+		bool resolved = bind_data.fs.TryResolveConfig(snapshot.key, ContextOpener(context), config);
+		auto auth_mode = resolved ? Value(AuthModeToString(config.auth)) : Value(LogicalType::VARCHAR);
+		auto namenode_source = resolved ? Value(config.namenode_source) : Value(LogicalType::VARCHAR);
+		auto secret_name = resolved ? OptionalString(config.secret_name) : Value(LogicalType::VARCHAR);
 		for (auto &nn : snapshot.namenodes) {
 			auto batched =
 			    snapshot.batch_listing < 0 ? Value(LogicalType::BOOLEAN) : Value::BOOLEAN(snapshot.batch_listing == 1);
 			state->rows.push_back({Value(snapshot.key), Value(nn.first), Value(nn.second.state),
 			                       Value::BOOLEAN(nn.first == snapshot.active), Value::UBIGINT(nn.second.requests),
 			                       OptionalString(nn.second.last_error), Value::UBIGINT(snapshot.datanode_requests),
-			                       Value(snapshot.auth_mode), Value(snapshot.namenode_source),
-			                       OptionalString(snapshot.secret_name), batched});
+			                       auth_mode, namenode_source, secret_name, batched});
 		}
 	}
 	return std::move(state);

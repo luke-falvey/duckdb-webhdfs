@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "webhdfs_glob.hpp"
 #include "webhdfs_file_list.hpp"
@@ -167,11 +168,27 @@ vector<WebHdfsEndpoint::Snapshot> WebHdfsFileSystem::EndpointSnapshots() {
 	return result;
 }
 
+void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
+	lock_guard<mutex> guard(endpoints_lock);
+	for (auto &entry : endpoints) {
+		entry.second->SetSmallFileCacheSize(bytes);
+	}
+}
+
 shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, optional_ptr<FileOpener> opener,
                                                           WebHdfsUrl &parsed) {
 	string error;
 	if (!webhdfs::ParseWebHdfsUrl(url, parsed, error)) {
 		throw IOException("Invalid WebHDFS URL \"%s\": %s", url, error);
+	}
+	// The webhdfs_* functions reach this without the virtual file system, and Kerberos contacts the KDC before the
+	// first HTTP request: check what both would check, before any of it.
+	if (db.GetFileSystem().SubSystemIsDisabled(GetName())) {
+		throw PermissionException("File system %s has been disabled by configuration", GetName());
+	}
+	if (!db.config.CanAccessFile(parsed.ToString(), FileType::FILE_TYPE_REGULAR)) {
+		throw PermissionException("Cannot access \"%s\" - file system operations are disabled by configuration",
+		                          parsed.ToString());
 	}
 	auto settings = WebHdfsSettings::Load(db, opener);
 	auto config = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), settings);
@@ -179,13 +196,31 @@ shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, opt
 	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint);
 }
 
-//! The directory name ListFiles is handing to its callback on this thread, if any (see ListFiles)
+bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out) {
+	WebHdfsUrl parsed;
+	string error;
+	if (!webhdfs::ParseWebHdfsUrl(key, parsed, error)) {
+		return false;
+	}
+	try {
+		out = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), WebHdfsSettings::Load(db, opener));
+		return true;
+	} catch (std::exception &) { // NOLINT: an unresolvable configuration shows as NULL
+		return false;
+	}
+}
+
+#ifdef _WIN32
+//! The directory name ListFiles is handing to its callback on this thread, if any (see ListEntry)
 static thread_local const string *listed_directory_name = nullptr;
+#endif
 
 bool WebHdfsFileSystem::CanHandleFile(const string &fpath) {
+#ifdef _WIN32
 	if (listed_directory_name && fpath == *listed_directory_name) {
 		return true;
 	}
+#endif
 	return webhdfs::HasWebHdfsScheme(fpath) || !webhdfs::SchemeRootOf(fpath).empty();
 }
 
@@ -619,13 +654,13 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 	throw IOException("Could not move \"%s\" to \"%s\"", source, target);
 }
 
-//! Hands one listed entry to a ListFiles callback. Autocomplete ends a directory suggestion with
-//! fs.PathSeparator(name), passing the bare entry name, so the virtual file system asks the local file system,
-//! which answers "\\" on Windows. While the callback runs for a directory, this file system claims exactly that
-//! name on this thread (CanHandleFile), so the separator comes from PathSeparator here ("/"). Other names and
-//! other threads route as before. Core reaches this through ListFilesExtended (the string/bool ListFiles of the
-//! virtual and opener file systems wraps it), so the guard lives here rather than in ListFiles.
+//! Hands one listed entry to a ListFiles callback. On Windows, autocomplete ends a directory suggestion with
+//! fs.PathSeparator(name) for the bare entry name, which the virtual file system routes to the local file system
+//! ("\\"). While the callback runs for a directory, this file system claims exactly that name on this thread
+//! (CanHandleFile), so the separator is "/". A workaround until autocomplete asks for the listed directory's
+//! separator; elsewhere the local separator is "/" already.
 static void ListEntry(const std::function<void(OpenFileInfo &info)> &callback, OpenFileInfo &info) {
+#ifdef _WIN32
 	if (!FileSystem::IsDirectory(info)) {
 		callback(info);
 		return;
@@ -639,6 +674,9 @@ static void ListEntry(const std::function<void(OpenFileInfo &info)> &callback, O
 		throw;
 	}
 	listed_directory_name = previous;
+#else
+	callback(info);
+#endif
 }
 
 bool WebHdfsFileSystem::ListFilesExtended(const string &directory,

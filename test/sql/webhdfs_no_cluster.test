@@ -17,6 +17,7 @@ SELECT current_setting('webhdfs_small_file_cache_size');
 ----
 67108864
 
+# the cache is shared by every session: a plain SET sets it database-wide, a session value is refused
 statement ok
 SET webhdfs_small_file_cache_size = 0;
 
@@ -25,8 +26,18 @@ SELECT current_setting('webhdfs_small_file_cache_size');
 ----
 0
 
+statement error
+SET SESSION webhdfs_small_file_cache_size = 1024;
+----
+cannot be set as a session variable - it can only be set globally
+
 statement ok
 RESET webhdfs_small_file_cache_size;
+
+query I
+SELECT current_setting('webhdfs_small_file_cache_size');
+----
+67108864
 
 # invalid URLs
 statement error

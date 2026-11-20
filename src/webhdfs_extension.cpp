@@ -19,12 +19,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Requests check again before they are sent and may install it then (WebHdfsHttp::GetHttpUtil).
 	WebHdfsHttp::TryLoadHttpfs(db);
 
-	WebHdfsSettings::Register(db);
+	auto webhdfs_fs = make_uniq<WebHdfsFileSystem>(db);
+	// the virtual file system owns the filesystem for the database's lifetime; the functions and settings borrow it
+	auto &fs_ref = *webhdfs_fs;
+	WebHdfsSettings::Register(db, [&fs_ref](idx_t bytes) { fs_ref.SetSmallFileCacheSize(bytes); });
 	RegisterWebHdfsSecretType(loader);
 
-	auto webhdfs_fs = make_uniq<WebHdfsFileSystem>(db);
-	// the virtual file system owns the filesystem for the database's lifetime; the functions borrow it
-	auto &fs_ref = *webhdfs_fs;
 	db.GetFileSystem().RegisterSubSystem(std::move(webhdfs_fs));
 	RegisterWebHdfsFunctions(loader, fs_ref);
 }

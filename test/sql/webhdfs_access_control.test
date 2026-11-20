@@ -1,0 +1,29 @@
+# name: test/sql/webhdfs_access_control.test
+# description: enable_external_access applies to the webhdfs_* functions before any request (or Kerberos)
+# group: [sql]
+
+require webhdfs
+
+require httpfs
+
+# a secret that turns on Kerberos: the check must come before the ticket cache and the KDC are used
+statement ok
+CREATE SECRET krb (TYPE webhdfs, SCOPE 'webhdfs://localhost:1', AUTH 'kerberos');
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:1/x');
+----
+Cannot access "webhdfs://localhost:1/x" - file system operations are disabled by configuration
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:1/dir');
+----
+Cannot access "webhdfs://localhost:1/dir" - file system operations are disabled by configuration
+
+statement error
+SELECT webhdfs_home_directory('webhdfs://localhost:1');
+----
+Cannot access "webhdfs://localhost:1/" - file system operations are disabled by configuration

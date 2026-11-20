@@ -75,6 +75,11 @@ public:
 	                                       webhdfs::WebHdfsUrl &parsed);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
+	//! Resize the small-file cache of every cluster in use (webhdfs_small_file_cache_size)
+	void SetSmallFileCacheSize(idx_t bytes);
+	//! The configuration a request to endpoint `key` (scheme://authority) would use for the caller of `opener`;
+	//! false if it can't be resolved (e.g. an invalid secret)
+	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
 	DatabaseInstance &GetDatabase() {

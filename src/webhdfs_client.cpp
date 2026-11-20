@@ -64,9 +64,6 @@ void WebHdfsEndpoint::MarkFailed(const string &namenode, const string &state, co
 
 void WebHdfsEndpoint::RecordConfig(const WebHdfsConfig &config) {
 	lock_guard<mutex> guard(lock);
-	auth_mode = AuthModeToString(config.auth);
-	namenode_source = config.namenode_source;
-	secret_name = config.secret_name;
 	for (auto &nn : config.namenodes) {
 		if (namenodes.find(nn) == namenodes.end()) {
 			order.push_back(nn);
@@ -85,9 +82,6 @@ WebHdfsEndpoint::Snapshot WebHdfsEndpoint::GetSnapshot() {
 	snapshot.active = active;
 	snapshot.datanode_requests = datanode_requests.load();
 	snapshot.batch_listing = batch_listing.load();
-	snapshot.auth_mode = auth_mode;
-	snapshot.namenode_source = namenode_source;
-	snapshot.secret_name = secret_name;
 	return snapshot;
 }
 

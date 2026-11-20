@@ -15,11 +15,12 @@ class WebHdfsFileHandle : public FileHandle {
 public:
 	WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpenFlags flags, shared_ptr<WebHdfsClient> client,
 	                  string hdfs_path);
-	//! A writer that was neither closed nor aborted is abandoned: it is aborted, never committed
+	//! A writer that was neither closed nor aborted is committed (Close) unless an exception is unwinding or a request
+	//! failed; then it is aborted. Errors never escape.
 	~WebHdfsFileHandle() override;
 
-	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle stays
-	//! open so that Abort() can still remove the file.
+	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle is marked
+	//! failed but stays open, so that Abort() can still remove the file.
 	void Close() override;
 	//! Send buffered writes
 	void Flush();

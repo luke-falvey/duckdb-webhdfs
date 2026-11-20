@@ -311,6 +311,9 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 	auto length_value = call.Named("length");
 	int64_t offset = offset_value.IsNull() ? 0 : offset_value.GetValue<int64_t>();
 	int64_t length = length_value.IsNull() ? NumericLimits<int64_t>::Maximum() : length_value.GetValue<int64_t>();
+	if (offset < 0 || length < 0) {
+		throw InvalidInputException("webhdfs_block_locations: offset and length must not be negative");
+	}
 	vector<std::pair<string, string>> query {{"offset", std::to_string(offset)}, {"length", std::to_string(length)}};
 	auto url = client->UrlFor(parsed.path);
 	vector<Row> rows;
@@ -381,24 +384,6 @@ static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
 	                  Value::BOOLEAN(acl["stickyBit"].GetBool()), StringList(acl["entries"])});
 }
 
-static bool DecodeHex(const string &text, string &out) {
-	auto start = text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') ? 2 : 0;
-	if ((text.size() - start) % 2 != 0) {
-		return false;
-	}
-	out.clear();
-	for (idx_t i = start; i < text.size(); i += 2) {
-		auto hex = text.substr(i, 2);
-		char *end = nullptr;
-		auto byte = strtol(hex.c_str(), &end, 16);
-		if (!end || *end != '\0') {
-			return false;
-		}
-		out += static_cast<char>(byte);
-	}
-	return true;
-}
-
 static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
 	auto client = call.Client(parsed);
@@ -410,6 +395,10 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 				query.emplace_back("xattr.name", name.ToString());
 			}
 		}
+		if (query.size() == 1) {
+			// an empty filter selects nothing (GETXATTRS without a name would return every attribute)
+			return make_uniq<VectorRowSource>(vector<Row>());
+		}
 	}
 	auto doc = ParseJson(client->GetJson("GETXATTRS", parsed.path, query), "GETXATTRS");
 	auto xattrs = doc->Root()["XAttrs"];
@@ -420,7 +409,7 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 		string bytes;
 		auto value = xattr["value"];
 		Value blob(LogicalType::BLOB);
-		if (!value.IsNull() && !value.IsMissing() && DecodeHex(value.GetString(), bytes)) {
+		if (!value.IsNull() && !value.IsMissing() && webhdfs::DecodeHex(value.GetString(), bytes)) {
 			blob = Value::BLOB_RAW(bytes);
 		}
 		rows.push_back({Value(url), Value(xattr["name"].GetString()), blob});

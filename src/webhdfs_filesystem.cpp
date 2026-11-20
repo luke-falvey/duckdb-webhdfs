@@ -307,6 +307,8 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 				throw IOException("Cannot open \"%s\" for writing: it is a directory", file.path);
 			}
 			if (exists && flags.ReturnNullIfExists()) {
+				// the handle wrote nothing: its destructor must not create the file
+				handle->closed = true;
 				return nullptr;
 			}
 			if (exists && flags.ExclusiveCreate()) {

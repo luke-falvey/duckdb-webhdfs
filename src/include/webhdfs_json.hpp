@@ -73,7 +73,7 @@ struct FileStatus {
 	bool is_dir = false;
 	bool is_symlink = false;
 	int64_t length = 0;
-	//! epoch milliseconds, within +-MAX_EPOCH_MS
+	//! epoch milliseconds, within [MIN_EPOCH_MS, MAX_EPOCH_MS]
 	int64_t modification_time = 0;
 	//! 0 when HDFS doesn't track it (directories, or dfs.namenode.accesstime.precision = 0)
 	int64_t access_time = 0;
@@ -96,7 +96,9 @@ struct RemoteException {
 	std::string message;
 };
 
-//! Largest |epoch milliseconds| a FileStatus time may have (fits a DuckDB TIMESTAMP in microseconds)
+//! Range of epoch milliseconds a FileStatus time may have: DuckDB's TIMESTAMP range (290309-12-22 BC to 294247-01-10).
+//! The lower end is not -MAX_EPOCH_MS: DuckDB's smallest TIMESTAMP is a whole day.
+constexpr int64_t MIN_EPOCH_MS = -9223372022400000;
 constexpr int64_t MAX_EPOCH_MS = INT64_MAX / 1000 - 1;
 
 //! A name the server may return as a pathSuffix: no '/' or NUL, not "." or "..". "" (the listed path is a file) is
@@ -125,5 +127,7 @@ bool ParseLongResult(const std::string &body, int64_t &out, std::string &error);
 uint16_t ParseOctalPermission(const std::string &text);
 //! bits -> "rwxr-xr-x" (with t/T for the sticky bit)
 std::string FormatPermission(uint16_t permission);
+//! An xattr value in GETXATTRS' hex encoding ("0x" and an even number of hex digits); false for anything else
+bool DecodeHex(const std::string &text, std::string &out);
 
 } // namespace webhdfs

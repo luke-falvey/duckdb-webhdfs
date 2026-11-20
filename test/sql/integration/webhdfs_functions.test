@@ -133,6 +133,16 @@ SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data
 ----
 1
 
+statement error
+SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', "offset" := -1);
+----
+offset and length must not be negative
+
+statement error
+SELECT count(*) FROM webhdfs_block_locations('webhdfs://localhost:9870/test/data/numbers.parquet', length := -10);
+----
+offset and length must not be negative
+
 query II
 SELECT algorithm LIKE 'MD5-of-%', length FROM webhdfs_checksum('webhdfs://localhost:9870/test/data/people.csv');
 ----
@@ -158,6 +168,17 @@ query TT
 SELECT name, decode(value) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := ['user.color']);
 ----
 user.color	blue
+
+# an empty name filter selects no attributes (GETXATTRS without a name returns them all)
+query I
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := []);
+----
+0
+
+query I
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := [NULL]);
+----
+0
 
 query TT
 SELECT name, storage_types FROM webhdfs_storage_policy('webhdfs://localhost:9870/test');

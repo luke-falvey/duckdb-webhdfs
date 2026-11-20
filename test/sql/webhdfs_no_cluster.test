@@ -241,6 +241,39 @@ CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['']);
 ----
 NAMENODES entry '' is empty
 
+# a scope no webhdfs URL can match would leave the secret silently unused
+statement error
+CREATE SECRET bad_scope (TYPE webhdfs, SCOPE 'hdfs://prod');
+----
+SCOPE 'hdfs://prod' must start with 'webhdfs://' or 'swebhdfs://'
+
+statement error
+CREATE SECRET bad_scope (TYPE webhdfs, SCOPE ['webhdfs://ok', 'prod']);
+----
+SCOPE 'prod' must start with 'webhdfs://' or 'swebhdfs://'
+
+statement ok
+CREATE SECRET scheme_scope (TYPE webhdfs, SCOPE 'SWEBHDFS://prod');
+
+statement ok
+DROP SECRET scheme_scope;
+
+# REPLICATION and BLOCK_SIZE must be positive (and the replication factor fit HDFS's short)
+statement error
+CREATE SECRET bad_repl (TYPE webhdfs, REPLICATION 0);
+----
+REPLICATION must be between 1 and 32767, not 0
+
+statement error
+CREATE SECRET bad_repl (TYPE webhdfs, REPLICATION 40000);
+----
+REPLICATION must be between 1 and 32767, not 40000
+
+statement error
+CREATE SECRET bad_block (TYPE webhdfs, BLOCK_SIZE -1);
+----
+BLOCK_SIZE must be between 1 and 9223372036854775807, not -1
+
 statement ok
 CREATE SECRET nn_ok (TYPE webhdfs, SCOPE 'webhdfs://nn-ok', NAMENODES ['nn1:9870,nn2:9870', '[::1]:9870']);
 
@@ -261,3 +294,9 @@ SELECT count(*), bool_and(state = 'unreachable'), any_value(namenode_source), an
 ----
 2	true	secret	dead
 
+# a cluster name with no port, secret or hdfs-site.xml nameservice is tried as host:9870; the error says how to
+# configure it (.invalid never resolves)
+statement error
+SELECT * FROM read_csv('webhdfs://no-such-cluster.invalid/x.csv');
+----
+<REGEX>:.*no NameNode could serve the request.*if "no-such-cluster.invalid" is an HA nameservice.*

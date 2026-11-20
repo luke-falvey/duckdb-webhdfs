@@ -4,7 +4,12 @@
 
 require webhdfs
 
-# the test runner turns autoloading off, so httpfs is not loaded yet
+# the test runner turns autoloading off, so httpfs is not loaded yet (checked: the errors below depend on it)
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'httpfs' AND loaded;
+----
+0
+
 statement ok
 SET autoload_known_extensions = false;
 

@@ -200,9 +200,12 @@ vector<std::pair<string, string>> WebHdfsConfig::AuthParams(const string &kerber
 
 string CurrentOsUser() {
 #ifndef _WIN32
-	auto pw = getpwuid(geteuid());
-	if (pw && pw->pw_name) {
-		return pw->pw_name;
+	// getpwuid_r: clients are created on many threads at once
+	struct passwd pwd;
+	struct passwd *found = nullptr;
+	vector<char> buffer(16384);
+	if (getpwuid_r(geteuid(), &pwd, buffer.data(), buffer.size(), &found) == 0 && found && found->pw_name) {
+		return found->pw_name;
 	}
 	const char *user = std::getenv("USER");
 #else

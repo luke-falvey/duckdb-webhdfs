@@ -1,6 +1,7 @@
 #include "webhdfs_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
@@ -27,11 +28,42 @@ static optional_ptr<FileOpener> ContextOpener(ClientContext &context) {
 }
 
 static Value TimestampValue(int64_t epoch_ms) {
+	// FileStatus parsing range-checks times, so this conversion cannot overflow
 	return Value::TIMESTAMPTZ(timestamp_tz_t(WebHdfsTimestamp(epoch_ms)));
 }
 
-static Value IntegerValue(int64_t value) {
-	return Value::INTEGER(NumericCast<int32_t>(value));
+//! HDFS reports accessTime 0 when it doesn't track it (always for directories, and for files when
+//! dfs.namenode.accesstime.precision is 0): that is "unknown", not 1970. modificationTime has no such sentinel.
+static Value AccessTimeValue(int64_t epoch_ms) {
+	return epoch_ms <= 0 ? Value(LogicalType::TIMESTAMP_TZ) : TimestampValue(epoch_ms);
+}
+
+//! An integer field of a server response; a number that doesn't fit int64 is the server's error, not DuckDB's.
+static int64_t JsonInt(JsonValue value, const char *op, const char *field, int64_t default_value = 0) {
+	int64_t result;
+	if (!value.TryGetInt(result, default_value)) {
+		throw IOException("WebHDFS %s: field \"%s\" is out of range: %s", op, field, value.ToJson());
+	}
+	return result;
+}
+
+//! An INTEGER column from a server response field
+static Value IntegerValue(JsonValue value, const char *op, const char *field) {
+	auto result = JsonInt(value, op, field);
+	int32_t narrowed;
+	if (!TryCast::Operation<int64_t, int32_t>(result, narrowed)) {
+		throw IOException("WebHDFS %s: field \"%s\" = %d does not fit INTEGER", op, field, result);
+	}
+	return Value::INTEGER(narrowed);
+}
+
+static FileStatus ParseStatus(JsonValue value, const char *op) {
+	FileStatus status;
+	string error;
+	if (!webhdfs::ParseFileStatusObject(value, status, error)) {
+		throw IOException("WebHDFS %s: %s", op, error);
+	}
+	return status;
 }
 
 static Value OptionalBigint(int64_t value) {
@@ -126,7 +158,7 @@ static Row EntryRow(const string &url, const string &path, const FileStatus &sta
 	        status.replication < 0 ? Value(LogicalType::INTEGER) : Value::INTEGER(status.replication),
 	        OptionalBigint(status.block_size),
 	        TimestampValue(status.modification_time),
-	        TimestampValue(status.access_time),
+	        AccessTimeValue(status.access_time),
 	        OptionalBigint(status.file_id),
 	        status.is_dir ? OptionalBigint(status.children_num) : Value(LogicalType::BIGINT),
 	        status.storage_policy < 0 ? Value(LogicalType::INTEGER) : Value::INTEGER(status.storage_policy),
@@ -232,11 +264,13 @@ static unique_ptr<RowSource> MakeContentSummary(MetaCall &call) {
 	auto doc = ParseJson(client->GetJson("GETCONTENTSUMMARY", parsed.path), "GETCONTENTSUMMARY");
 	auto summary = doc->Root()["ContentSummary"];
 	auto ec = summary["ecPolicy"];
-	return SingleRow({Value(client->UrlFor(parsed.path)), Value::BIGINT(summary["length"].GetInt()),
-	                  Value::BIGINT(summary["fileCount"].GetInt()), Value::BIGINT(summary["directoryCount"].GetInt()),
-	                  Value::BIGINT(summary["spaceConsumed"].GetInt()), OptionalBigint(summary["quota"].GetInt(-1)),
-	                  OptionalBigint(summary["spaceQuota"].GetInt(-1)),
-	                  OptionalString(ec.IsString() ? ec.GetString() : "")});
+	auto field = [&](const char *name, int64_t default_value = 0) {
+		return JsonInt(summary[name], "GETCONTENTSUMMARY", name, default_value);
+	};
+	return SingleRow({Value(client->UrlFor(parsed.path)), Value::BIGINT(field("length")),
+	                  Value::BIGINT(field("fileCount")), Value::BIGINT(field("directoryCount")),
+	                  Value::BIGINT(field("spaceConsumed")), OptionalBigint(field("quota", -1)),
+	                  OptionalBigint(field("spaceQuota", -1)), OptionalString(ec.IsString() ? ec.GetString() : "")});
 }
 
 static LogicalType TypeQuotaType() {
@@ -253,13 +287,17 @@ static unique_ptr<RowSource> MakeQuotaUsage(MetaCall &call) {
 	vector<Value> values;
 	usage["typeQuota"].ForEachMember([&](const string &type, JsonValue entry) {
 		keys.emplace_back(type);
-		values.push_back(Value::STRUCT({{"consumed", OptionalBigint(entry["consumed"].GetInt(-1))},
-		                                {"quota", OptionalBigint(entry["quota"].GetInt(-1))}}));
+		values.push_back(
+		    Value::STRUCT({{"consumed", OptionalBigint(JsonInt(entry["consumed"], "GETQUOTAUSAGE", "consumed", -1))},
+		                   {"quota", OptionalBigint(JsonInt(entry["quota"], "GETQUOTAUSAGE", "quota", -1))}}));
 	});
 	auto struct_type = MapType::ValueType(TypeQuotaType());
-	return SingleRow({Value(client->UrlFor(parsed.path)), Value::BIGINT(usage["fileAndDirectoryCount"].GetInt()),
-	                  OptionalBigint(usage["quota"].GetInt(-1)), Value::BIGINT(usage["spaceConsumed"].GetInt()),
-	                  OptionalBigint(usage["spaceQuota"].GetInt(-1)),
+	auto field = [&](const char *name, int64_t default_value = 0) {
+		return JsonInt(usage[name], "GETQUOTAUSAGE", name, default_value);
+	};
+	return SingleRow({Value(client->UrlFor(parsed.path)), Value::BIGINT(field("fileAndDirectoryCount")),
+	                  OptionalBigint(field("quota", -1)), Value::BIGINT(field("spaceConsumed")),
+	                  OptionalBigint(field("spaceQuota", -1)),
 	                  Value::MAP(LogicalType::VARCHAR, struct_type, std::move(keys), std::move(values))});
 }
 
@@ -287,9 +325,9 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 		auto blocks = doc->Root()["BlockLocations"]["BlockLocation"];
 		for (idx_t i = 0; i < blocks.Size(); i++) {
 			auto block = blocks.At(i);
-			rows.push_back({Value(url), Value::BIGINT(block["offset"].GetInt()),
-			                Value::BIGINT(block["length"].GetInt()), StringList(block["hosts"]),
-			                StringList(block["names"]), StringList(block["topologyPaths"]),
+			rows.push_back({Value(url), Value::BIGINT(JsonInt(block["offset"], "GETFILEBLOCKLOCATIONS", "offset")),
+			                Value::BIGINT(JsonInt(block["length"], "GETFILEBLOCKLOCATIONS", "length")),
+			                StringList(block["hosts"]), StringList(block["names"]), StringList(block["topologyPaths"]),
 			                StringList(block["storageTypes"]), Value::BOOLEAN(block["corrupt"].GetBool())});
 		}
 	} else {
@@ -300,19 +338,20 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 			auto locations = block["locations"];
 			for (idx_t l = 0; l < locations.Size(); l++) {
 				auto location = locations.At(l);
-				auto name = location["ipAddr"].GetString() + ":" + std::to_string(location["xferPort"].GetInt());
+				auto name = location["ipAddr"].GetString() + ":" +
+				            std::to_string(JsonInt(location["xferPort"], "GET_BLOCK_LOCATIONS", "xferPort"));
 				hosts.emplace_back(location["hostName"].GetString());
 				names.emplace_back(name);
 				topology.emplace_back(location["networkLocation"].GetString() + "/" + name);
 				storage.emplace_back(location["storageType"].GetString("DISK"));
 			}
-			rows.push_back({Value(url), Value::BIGINT(block["startOffset"].GetInt()),
-			                Value::BIGINT(block["block"]["numBytes"].GetInt()),
-			                Value::LIST(LogicalType::VARCHAR, std::move(hosts)),
-			                Value::LIST(LogicalType::VARCHAR, std::move(names)),
-			                Value::LIST(LogicalType::VARCHAR, std::move(topology)),
-			                Value::LIST(LogicalType::VARCHAR, std::move(storage)),
-			                Value::BOOLEAN(block["isCorrupt"].GetBool())});
+			rows.push_back(
+			    {Value(url), Value::BIGINT(JsonInt(block["startOffset"], "GET_BLOCK_LOCATIONS", "startOffset")),
+			     Value::BIGINT(JsonInt(block["block"]["numBytes"], "GET_BLOCK_LOCATIONS", "numBytes")),
+			     Value::LIST(LogicalType::VARCHAR, std::move(hosts)),
+			     Value::LIST(LogicalType::VARCHAR, std::move(names)),
+			     Value::LIST(LogicalType::VARCHAR, std::move(topology)),
+			     Value::LIST(LogicalType::VARCHAR, std::move(storage)), Value::BOOLEAN(block["isCorrupt"].GetBool())});
 		}
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
@@ -324,7 +363,8 @@ static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 	auto doc = ParseJson(client->GetJsonViaDataNode("GETFILECHECKSUM", parsed.path), "GETFILECHECKSUM");
 	auto checksum = doc->Root()["FileChecksum"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), Value(checksum["algorithm"].GetString()),
-	                  Value(checksum["bytes"].GetString()), IntegerValue(checksum["length"].GetInt())});
+	                  Value(checksum["bytes"].GetString()),
+	                  IntegerValue(checksum["length"], "GETFILECHECKSUM", "length")});
 }
 
 static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
@@ -390,7 +430,7 @@ static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 	auto client = call.Client(parsed);
 	auto doc = ParseJson(client->GetJson("GETSTORAGEPOLICY", parsed.path), "GETSTORAGEPOLICY");
 	auto policy = doc->Root()["BlockStoragePolicy"];
-	return SingleRow({Value(client->UrlFor(parsed.path)), IntegerValue(policy["id"].GetInt()),
+	return SingleRow({Value(client->UrlFor(parsed.path)), IntegerValue(policy["id"], "GETSTORAGEPOLICY", "id"),
 	                  Value(policy["name"].GetString()), StringList(policy["storageTypes"]),
 	                  StringList(policy["creationFallbacks"]), StringList(policy["replicationFallbacks"]),
 	                  Value::BOOLEAN(policy["copyOnCreateFile"].GetBool())});
@@ -405,9 +445,10 @@ static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 	for (idx_t i = 0; i < snapshots.Size(); i++) {
 		auto snapshot = snapshots.At(i);
 		auto full_path = snapshot["fullPath"].GetString();
-		auto status = webhdfs::ParseFileStatusObject(snapshot["dirStatus"]);
+		auto status = ParseStatus(snapshot["dirStatus"], "GETSNAPSHOTLIST");
 		rows.push_back({Value(client->UrlFor(full_path)), Value(webhdfs::BaseName(full_path)),
-		                IntegerValue(snapshot["snapshotID"].GetInt()), TimestampValue(status.modification_time)});
+		                IntegerValue(snapshot["snapshotID"], "GETSNAPSHOTLIST", "snapshotID"),
+		                TimestampValue(status.modification_time)});
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
 }
@@ -420,11 +461,13 @@ static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 	vector<Row> rows;
 	for (idx_t i = 0; i < list.Size(); i++) {
 		auto entry = list.At(i);
-		auto status = webhdfs::ParseFileStatusObject(entry["dirStatus"]);
+		auto status = ParseStatus(entry["dirStatus"], "GETSNAPSHOTTABLEDIRECTORYLIST");
 		auto path = webhdfs::JoinPath(entry["parentFullPath"].GetString("/"), status.path_suffix);
-		rows.push_back({Value(client->UrlFor(path)), IntegerValue(entry["snapshotNumber"].GetInt()),
-		                IntegerValue(entry["snapshotQuota"].GetInt()), Value(status.owner), Value(status.group),
-		                Value(webhdfs::FormatPermission(status.permission)), TimestampValue(status.modification_time)});
+		rows.push_back({Value(client->UrlFor(path)),
+		                IntegerValue(entry["snapshotNumber"], "GETSNAPSHOTTABLEDIRECTORYLIST", "snapshotNumber"),
+		                IntegerValue(entry["snapshotQuota"], "GETSNAPSHOTTABLEDIRECTORYLIST", "snapshotQuota"),
+		                Value(status.owner), Value(status.group), Value(webhdfs::FormatPermission(status.permission)),
+		                TimestampValue(status.modification_time)});
 	}
 	return make_uniq<VectorRowSource>(std::move(rows));
 }
@@ -434,13 +477,17 @@ static unique_ptr<RowSource> MakeServerDefaults(MetaCall &call) {
 	auto client = call.Client(parsed);
 	auto doc = ParseJson(client->GetJson("GETSERVERDEFAULTS", "/"), "GETSERVERDEFAULTS");
 	auto defaults = doc->Root()["FsServerDefaults"];
-	return SingleRow(
-	    {Value(parsed.Prefix()), Value::BIGINT(defaults["blockSize"].GetInt()),
-	     IntegerValue(defaults["bytesPerChecksum"].GetInt()), IntegerValue(defaults["writePacketSize"].GetInt()),
-	     IntegerValue(defaults["replication"].GetInt()), IntegerValue(defaults["fileBufferSize"].GetInt()),
-	     Value::BOOLEAN(defaults["encryptDataTransfer"].GetBool()), Value::BIGINT(defaults["trashInterval"].GetInt()),
-	     IntegerValue(defaults["checksumType"].GetInt()), OptionalString(defaults["keyProviderUri"].GetString()),
-	     IntegerValue(defaults["defaultStoragePolicyId"].GetInt())});
+	auto bigint = [&](const char *name) {
+		return Value::BIGINT(JsonInt(defaults[name], "GETSERVERDEFAULTS", name));
+	};
+	auto integer = [&](const char *name) {
+		return IntegerValue(defaults[name], "GETSERVERDEFAULTS", name);
+	};
+	return SingleRow({Value(parsed.Prefix()), bigint("blockSize"), integer("bytesPerChecksum"),
+	                  integer("writePacketSize"), integer("replication"), integer("fileBufferSize"),
+	                  Value::BOOLEAN(defaults["encryptDataTransfer"].GetBool()), bigint("trashInterval"),
+	                  integer("checksumType"), OptionalString(defaults["keyProviderUri"].GetString()),
+	                  integer("defaultStoragePolicyId")});
 }
 
 static vector<MetaFunctionDef> &FunctionDefs() {
@@ -571,7 +618,16 @@ struct MetaBindData : public TableFunctionData {
 	}
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<MetaBindData>();
-		return &def == &other.def;
+		if (&def != &other.def || named.size() != other.named.size()) {
+			return false;
+		}
+		for (auto &entry : named) {
+			auto match = other.named.find(entry.first);
+			if (match == other.named.end() || !Value::NotDistinctFrom(entry.second, match->second)) {
+				return false;
+			}
+		}
+		return true;
 	}
 };
 

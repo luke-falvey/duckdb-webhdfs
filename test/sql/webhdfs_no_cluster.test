@@ -11,6 +11,23 @@ SELECT current_setting('webhdfs_list_parallelism'), current_setting('webhdfs_inc
 ----
 16	false	67108864	1048576	true
 
+# the small-file cache: 64 MiB by default, 0 disables it
+query I
+SELECT current_setting('webhdfs_small_file_cache_size');
+----
+67108864
+
+statement ok
+SET webhdfs_small_file_cache_size = 0;
+
+query I
+SELECT current_setting('webhdfs_small_file_cache_size');
+----
+0
+
+statement ok
+RESET webhdfs_small_file_cache_size;
+
 # invalid URLs
 statement error
 SELECT * FROM read_csv('webhdfs:///data/x.csv');
@@ -142,15 +159,82 @@ AUTH must be 'simple', 'token', 'kerberos' or 'none'
 statement error
 CREATE SECRET bad2 (TYPE webhdfs, NO_SUCH_OPTION 'x');
 ----
+Unknown parameter
 
-
-statement ok
-CREATE SECRET tok (TYPE webhdfs, SCOPE 'webhdfs://localhost:2', AUTH 'token');
-
+# AUTH 'token' needs a token, and a token goes with AUTH 'token' (or no AUTH) only
 statement error
-SELECT * FROM read_csv('webhdfs://localhost:2/x.csv');
+CREATE SECRET tok (TYPE webhdfs, SCOPE 'webhdfs://localhost:2', AUTH 'token');
 ----
 AUTH 'token' needs a DELEGATION_TOKEN
+
+statement error
+CREATE SECRET tok (TYPE webhdfs, AUTH 'TOKEN', DELEGATION_TOKEN '');
+----
+AUTH 'token' needs a DELEGATION_TOKEN
+
+statement error
+CREATE SECRET tok (TYPE webhdfs, AUTH 'simple', DELEGATION_TOKEN 'tok');
+----
+DELEGATION_TOKEN can only be used with AUTH 'token'
+
+statement error
+CREATE SECRET tok (TYPE webhdfs, AUTH 'kerberos', DELEGATION_TOKEN 'tok');
+----
+DELEGATION_TOKEN can only be used with AUTH 'token'
+
+statement error
+CREATE SECRET tok (TYPE webhdfs, AUTH 'none', DELEGATION_TOKEN 'tok');
+----
+DELEGATION_TOKEN can only be used with AUTH 'token'
+
+statement ok
+CREATE SECRET tok (TYPE webhdfs, SCOPE 'webhdfs://tok-explicit', AUTH 'token', DELEGATION_TOKEN 'tok');
+
+statement ok
+CREATE SECRET tok_implicit (TYPE webhdfs, SCOPE 'webhdfs://tok-implicit', DELEGATION_TOKEN 'tok');
+
+statement ok
+DROP SECRET tok;
+
+statement ok
+DROP SECRET tok_implicit;
+
+# NAMENODES entries are host:port: no scheme, no path, a numeric port
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['http://nn1:9870']);
+----
+NAMENODES entry 'http://nn1:9870' must be host:port
+
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['nn1:9870/webhdfs']);
+----
+NAMENODES entry 'nn1:9870/webhdfs' must be host:port
+
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['nn1']);
+----
+NAMENODES entry 'nn1' must be host:port
+
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['nn1:http']);
+----
+NAMENODES entry 'nn1:http' must be host:port
+
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['nn1:9870', 'nn2:']);
+----
+NAMENODES entry 'nn2:' must be host:port
+
+statement error
+CREATE SECRET nn_bad (TYPE webhdfs, NAMENODES ['']);
+----
+NAMENODES entry '' is empty
+
+statement ok
+CREATE SECRET nn_ok (TYPE webhdfs, SCOPE 'webhdfs://nn-ok', NAMENODES ['nn1:9870,nn2:9870', '[::1]:9870']);
+
+statement ok
+DROP SECRET nn_ok;
 
 # HA: every NameNode of the list is tried
 statement ok

@@ -13,6 +13,10 @@ namespace webhdfs {
 //! Returns false and sets `error` on failure.
 bool CreateSpnegoToken(const std::string &service, const std::string &host, std::string &token, std::string &error);
 
+//! The name of the default Kerberos principal (the client principal of the ticket cache CreateSpnegoToken uses).
+//! Returns false and sets `error` if there is none (no ticket, no GSSAPI library).
+bool DefaultPrincipal(std::string &principal, std::string &error);
+
 //! True if a GSSAPI library could be loaded.
 bool GssapiAvailable(std::string &error);
 

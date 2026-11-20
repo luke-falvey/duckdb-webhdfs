@@ -2,6 +2,8 @@
 
 #include "yyjson.hpp"
 
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <vector>
 
@@ -76,38 +78,63 @@ std::string JsonValue::GetString(const std::string &default_value) const {
 	return ToJson();
 }
 
-int64_t JsonValue::GetInt(int64_t default_value) const {
+bool JsonValue::TryGetInt(int64_t &out, int64_t default_value) const {
+	out = default_value;
 	if (!val) {
-		return default_value;
+		return true;
 	}
 	if (yyjson_is_sint(V(val))) {
-		return yyjson_get_sint(V(val));
+		out = yyjson_get_sint(V(val));
+		return true;
 	}
 	if (yyjson_is_uint(V(val))) {
-		return static_cast<int64_t>(yyjson_get_uint(V(val)));
+		auto value = yyjson_get_uint(V(val));
+		if (value > static_cast<uint64_t>(INT64_MAX)) {
+			return false;
+		}
+		out = static_cast<int64_t>(value);
+		return true;
 	}
 	if (yyjson_is_real(V(val))) {
-		return static_cast<int64_t>(yyjson_get_real(V(val)));
+		auto value = yyjson_get_real(V(val));
+		// [-2^63, 2^63) is exactly the doubles whose truncation fits; NaN fails both comparisons
+		if (!(value >= -9223372036854775808.0 && value < 9223372036854775808.0)) {
+			return false;
+		}
+		out = static_cast<int64_t>(value);
+		return true;
 	}
 	if (yyjson_is_str(V(val))) {
-		char *end = nullptr;
 		auto str = GetString();
-		auto result = std::strtoll(str.c_str(), &end, 10);
-		if (end && *end == '\0' && !str.empty()) {
-			return result;
+		if (str.empty()) {
+			return true;
 		}
+		char *end = nullptr;
+		errno = 0;
+		auto result = std::strtoll(str.c_str(), &end, 10);
+		if (!end || *end != '\0') {
+			// not a number: treat like a missing value
+			return true;
+		}
+		if (errno == ERANGE) {
+			return false;
+		}
+		out = result;
+		return true;
 	}
-	return default_value;
+	return true;
+}
+
+int64_t JsonValue::GetInt(int64_t default_value) const {
+	int64_t result;
+	return TryGetInt(result, default_value) ? result : default_value;
 }
 
 double JsonValue::GetDouble(double default_value) const {
 	if (!val || !yyjson_is_num(V(val))) {
 		return default_value;
 	}
-	if (yyjson_is_real(V(val))) {
-		return yyjson_get_real(V(val));
-	}
-	return static_cast<double>(GetInt());
+	return yyjson_get_num(V(val));
 }
 
 bool JsonValue::GetBool(bool default_value) const {
@@ -180,27 +207,87 @@ std::string FormatPermission(uint16_t permission) {
 	return result;
 }
 
-FileStatus ParseFileStatusObject(JsonValue obj) {
-	FileStatus status;
+bool IsValidPathSuffix(const std::string &suffix) {
+	if (suffix == "." || suffix == "..") {
+		return false;
+	}
+	return suffix.find('/') == std::string::npos && suffix.find('\0') == std::string::npos;
+}
+
+// Reads an integer field; false (with `error` set) when the server sent a number that doesn't fit int64.
+static bool ReadInt(JsonValue obj, const char *field, int64_t default_value, int64_t &out, std::string &error) {
+	auto value = obj[field];
+	if (!value.TryGetInt(out, default_value)) {
+		error = std::string("field \"") + field + "\" is out of range: " + value.ToJson();
+		return false;
+	}
+	return true;
+}
+
+static bool ReadInt32(JsonValue obj, const char *field, int64_t default_value, int32_t &out, std::string &error) {
+	int64_t value;
+	if (!ReadInt(obj, field, default_value, value, error)) {
+		return false;
+	}
+	if (value < INT32_MIN || value > INT32_MAX) {
+		error = std::string("field \"") + field + "\" is out of range: " + std::to_string(value);
+		return false;
+	}
+	out = static_cast<int32_t>(value);
+	return true;
+}
+
+static bool ReadEpochMs(JsonValue obj, const char *field, int64_t &out, std::string &error) {
+	if (!ReadInt(obj, field, 0, out, error)) {
+		return false;
+	}
+	if (out < -MAX_EPOCH_MS || out > MAX_EPOCH_MS) {
+		error = std::string("field \"") + field + "\" is not a valid time: " + std::to_string(out);
+		return false;
+	}
+	return true;
+}
+
+static bool ParseFileStatusFields(JsonValue obj, FileStatus &status, std::string &error) {
+	if (!obj.IsObject()) {
+		error = "FileStatus is not an object";
+		return false;
+	}
 	status.path_suffix = obj["pathSuffix"].GetString();
+	if (!IsValidPathSuffix(status.path_suffix)) {
+		error = "invalid pathSuffix \"" + status.path_suffix + "\"";
+		return false;
+	}
 	auto type = obj["type"].GetString();
 	status.is_dir = type == "DIRECTORY";
 	status.is_symlink = type == "SYMLINK";
-	status.length = obj["length"].GetInt(0);
-	status.modification_time = obj["modificationTime"].GetInt(0);
-	status.access_time = obj["accessTime"].GetInt(0);
+	if (!ReadInt(obj, "length", 0, status.length, error)) {
+		return false;
+	}
+	if (status.length < 0) {
+		error = "negative length " + std::to_string(status.length);
+		return false;
+	}
+	if (!ReadEpochMs(obj, "modificationTime", status.modification_time, error) ||
+	    !ReadEpochMs(obj, "accessTime", status.access_time, error)) {
+		return false;
+	}
 	status.owner = obj["owner"].GetString();
 	status.group = obj["group"].GetString();
 	auto permission = obj["permission"];
 	status.permission =
 	    ParseOctalPermission(permission.IsString() ? permission.GetString() : std::to_string(permission.GetInt(0)));
 	if (!status.is_dir) {
-		status.replication = static_cast<int32_t>(obj["replication"].GetInt(-1));
-		status.block_size = obj["blockSize"].GetInt(-1);
+		if (!ReadInt32(obj, "replication", -1, status.replication, error) ||
+		    !ReadInt(obj, "blockSize", -1, status.block_size, error)) {
+			return false;
+		}
 	}
-	status.file_id = obj["fileId"].GetInt(-1);
-	status.children_num = obj["childrenNum"].GetInt(-1);
-	status.storage_policy = static_cast<int32_t>(obj["storagePolicy"].GetInt(-1));
+	if (!ReadInt(obj, "fileId", -1, status.file_id, error) ||
+	    !ReadInt(obj, "childrenNum", -1, status.children_num, error) ||
+	    !ReadInt32(obj, "storagePolicy", -1, status.storage_policy, error)) {
+		return false;
+	}
 	auto ec = obj["ecPolicy"];
 	if (ec.IsString()) {
 		status.ec_policy = ec.GetString();
@@ -208,7 +295,21 @@ FileStatus ParseFileStatusObject(JsonValue obj) {
 		status.ec_policy = ec["name"].GetString();
 	}
 	status.symlink = obj["symlink"].GetString();
-	return status;
+	return true;
+}
+
+bool ParseFileStatusObject(JsonValue obj, FileStatus &out, std::string &error) {
+	FileStatus status;
+	if (!ParseFileStatusFields(obj, status, error)) {
+		if (!status.path_suffix.empty() && IsValidPathSuffix(status.path_suffix)) {
+			error = "FileStatus of \"" + status.path_suffix + "\": " + error;
+		} else {
+			error = "FileStatus: " + error;
+		}
+		return false;
+	}
+	out = std::move(status);
+	return true;
 }
 
 static std::unique_ptr<JsonDocument> ParseOrError(const std::string &body, std::string &error) {
@@ -225,8 +326,7 @@ bool ParseFileStatus(const std::string &body, FileStatus &out, std::string &erro
 		error = "response has no FileStatus object";
 		return false;
 	}
-	out = ParseFileStatusObject(obj);
-	return true;
+	return ParseFileStatusObject(obj, out, error);
 }
 
 bool ParseFileStatusList(const std::string &body, std::vector<FileStatus> &out, int64_t &remaining,
@@ -240,7 +340,10 @@ bool ParseFileStatusList(const std::string &body, std::vector<FileStatus> &out, 
 	JsonValue statuses;
 	if (root["DirectoryListing"].IsObject()) {
 		auto listing = root["DirectoryListing"];
-		remaining = listing["remainingEntries"].GetInt(0);
+		if (!listing["remainingEntries"].TryGetInt(remaining, 0)) {
+			error = "remainingEntries is out of range";
+			return false;
+		}
 		statuses = listing["partialListing"]["FileStatuses"]["FileStatus"];
 	} else if (root["FileStatuses"].IsObject()) {
 		statuses = root["FileStatuses"]["FileStatus"];
@@ -257,7 +360,11 @@ bool ParseFileStatusList(const std::string &body, std::vector<FileStatus> &out, 
 	}
 	out.reserve(out.size() + statuses.Size());
 	for (size_t i = 0; i < statuses.Size(); i++) {
-		out.push_back(ParseFileStatusObject(statuses.At(i)));
+		FileStatus status;
+		if (!ParseFileStatusObject(statuses.At(i), status, error)) {
+			return false;
+		}
+		out.push_back(std::move(status));
 	}
 	return true;
 }
@@ -330,7 +437,10 @@ bool ParseLongResult(const std::string &body, int64_t &out, std::string &error) 
 		error = "response has no long result";
 		return false;
 	}
-	out = value.GetInt();
+	if (!value.TryGetInt(out)) {
+		error = "long result is out of range: " + value.ToJson();
+		return false;
+	}
 	return true;
 }
 

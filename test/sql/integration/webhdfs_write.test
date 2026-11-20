@@ -135,6 +135,75 @@ SELECT answer FROM read_csv('webhdfs://localhost:9870/test/out/write_test/tmp.cs
 ----
 43
 
+# an empty file: Close() sends the CREATE with no data
+statement ok
+COPY (SELECT 1 AS x WHERE false) TO 'webhdfs://localhost:9870/test/out/write_test/empty.csv' (HEADER false);
+
+query IT
+SELECT size, type FROM webhdfs_stat('webhdfs://localhost:9870/test/out/write_test/empty.csv');
+----
+0	file
+
+# a write that fails after several chunks were sent leaves no file behind (it is aborted, never committed)
+statement ok
+SET webhdfs_write_chunk_size = 1000000;
+
+statement ok
+SET threads = 1;
+
+statement error
+COPY (SELECT CASE WHEN range < 400000 THEN range ELSE error('boom') END AS id, repeat('x', 50) AS pad FROM range(600000)) TO 'webhdfs://localhost:9870/test/out/write_test/fail.csv';
+----
+boom
+
+query I
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/out/write_test/fail.csv');
+----
+false
+
+# the same over an existing file: the write goes to a temporary file, so the original survives
+statement ok
+COPY (SELECT 7 AS answer) TO 'webhdfs://localhost:9870/test/out/write_test/keep.csv';
+
+statement error
+COPY (SELECT CASE WHEN range < 400000 THEN range ELSE error('boom') END AS id, repeat('x', 50) AS pad FROM range(600000)) TO 'webhdfs://localhost:9870/test/out/write_test/keep.csv';
+----
+boom
+
+query I
+SELECT answer FROM read_csv('webhdfs://localhost:9870/test/out/write_test/keep.csv');
+----
+7
+
+query I
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/out/write_test/tmp_keep.csv');
+----
+false
+
+statement ok
+RESET threads;
+
+statement ok
+RESET webhdfs_write_chunk_size;
+
+# replacing a file through the HttpFS gateway, which ignores renameoptions=OVERWRITE: the rename falls back to
+# delete-then-rename
+statement ok
+COPY (SELECT 1 AS answer) TO 'webhdfs://localhost:14000/test/out/write_test/gateway_tmp.csv' (USE_TMP_FILE true);
+
+statement ok
+COPY (SELECT 2 AS answer) TO 'webhdfs://localhost:14000/test/out/write_test/gateway_tmp.csv' (USE_TMP_FILE true);
+
+query I
+SELECT answer FROM read_csv('webhdfs://localhost:9870/test/out/write_test/gateway_tmp.csv');
+----
+2
+
+query I
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/out/write_test/tmp_gateway_tmp.csv');
+----
+false
+
 # writing where the user may not
 statement ok
 SET webhdfs_user_name = 'alice';

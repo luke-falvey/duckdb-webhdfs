@@ -7,6 +7,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
+#include "webhdfs_secret.hpp"
 
 #include <cstdlib>
 
@@ -59,6 +60,9 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
+	if (TryGetSetting(db, opener, SMALL_FILE_CACHE_SIZE, value)) {
+		settings.small_file_cache_size = value.GetValue<uint64_t>();
+	}
 	return settings;
 }
 
@@ -92,6 +96,10 @@ void WebHdfsSettings::Register(DatabaseInstance &db) {
 	                          "User name for WebHDFS simple authentication when no webhdfs secret sets one (default: "
 	                          "HADOOP_USER_NAME, else the OS user)",
 	                          LogicalType::VARCHAR, Value());
+	config.AddExtensionOption(SMALL_FILE_CACHE_SIZE,
+	                          "Bytes of small WebHDFS files (read whole) kept in memory per cluster, so a file opened "
+	                          "again (e.g. at bind time and to scan it) is not fetched twice; 0 disables the cache",
+	                          LogicalType::UBIGINT, Value::UBIGINT(DEFAULT_SMALL_FILE_CACHE_SIZE));
 }
 
 //===--------------------------------------------------------------------===//
@@ -194,12 +202,20 @@ static CatalogTransaction SecretTransaction(DatabaseInstance &db, optional_ptr<F
 	               : CatalogTransaction::GetSystemTransaction(db);
 }
 
+//! Every webhdfs secret visible to this transaction, from every storage (temporary, persistent, ...)
+static vector<SecretEntry> AllWebHdfsSecrets(DatabaseInstance &db, optional_ptr<FileOpener> opener) {
+	vector<SecretEntry> result;
+	for (auto &entry : SecretManager::Get(db).AllSecrets(SecretTransaction(db, opener))) {
+		if (entry.secret && StringUtil::CIEquals(entry.secret->GetType().GetIdentifierName(), "webhdfs")) {
+			result.push_back(std::move(entry));
+		}
+	}
+	return result;
+}
+
 vector<string> WebHdfsSecretAuthorities(DatabaseInstance &db, optional_ptr<FileOpener> opener, const string &scheme) {
 	vector<string> result;
-	for (auto &entry : SecretManager::Get(db).AllSecrets(SecretTransaction(db, opener))) {
-		if (!entry.secret || !StringUtil::CIEquals(entry.secret->GetType().GetIdentifierName(), "webhdfs")) {
-			continue;
-		}
+	for (auto &entry : AllWebHdfsSecrets(db, opener)) {
 		for (auto &scope : entry.secret->GetScope()) {
 			auto authority = webhdfs::ScopeAuthority(scope, scheme);
 			if (!authority.empty()) {
@@ -210,13 +226,43 @@ vector<string> WebHdfsSecretAuthorities(DatabaseInstance &db, optional_ptr<FileO
 	return result;
 }
 
-static optional_ptr<const KeyValueSecret> LookupSecret(DatabaseInstance &db, optional_ptr<FileOpener> opener,
-                                                       const string &path, SecretMatch &match) {
-	match = SecretManager::Get(db).LookupSecret(SecretTransaction(db, opener), path, "webhdfs");
-	if (!match.HasMatch()) {
-		return nullptr;
+//! The tie-break offsets of core's storages (SecretStorage::*_STORAGE_OFFSET): on an equal score, lower wins
+static int64_t StorageTieBreakOffset(const string &storage) {
+	if (storage == SecretManager::TRANSACTION_STORAGE_NAME) {
+		return SecretStorage::TRANSACTION_STORAGE_OFFSET;
 	}
-	return dynamic_cast<const KeyValueSecret *>(&match.GetSecret());
+	if (storage == SecretManager::CONNECTION_STORAGE_NAME) {
+		return SecretStorage::CONNECTION_STORAGE_OFFSET;
+	}
+	if (storage == SecretManager::TEMPORARY_STORAGE_NAME) {
+		return SecretStorage::TEMPORARY_STORAGE_OFFSET;
+	}
+	if (storage == SecretManager::LOCAL_FILE_STORAGE_NAME) {
+		return SecretStorage::LOCAL_FILE_STORAGE_OFFSET;
+	}
+	return SecretStorage::LOCAL_FILE_STORAGE_OFFSET + 10;
+}
+
+//! The webhdfs secret for a path. Scored here with WebHdfsSecret::ScopeMatchScore rather than through
+//! SecretManager::LookupSecret: persistent secrets are stored as KEY_VALUE_SECRETs and reload as plain KeyValueSecrets,
+//! whose MatchScore is core's string-prefix match ('webhdfs://prod' would match 'webhdfs://prod2/x'). Scoring every
+//! webhdfs secret the same way keeps in-memory and persistent secrets alike. Ranking follows core: the longest
+//! matching scope, then the storage tie-break offset, then the smallest name.
+static unique_ptr<SecretEntry> LookupSecret(DatabaseInstance &db, optional_ptr<FileOpener> opener, const string &path) {
+	unique_ptr<SecretEntry> best;
+	int64_t best_score = NumericLimits<int64_t>::Minimum();
+	for (auto &entry : AllWebHdfsSecrets(db, opener)) {
+		auto match = WebHdfsSecret::SecretMatchScore(*entry.secret, path);
+		if (match == NumericLimits<int64_t>::Minimum()) {
+			continue;
+		}
+		auto score = 100 * match - StorageTieBreakOffset(entry.storage_mode);
+		if (!best || score > best_score || (score == best_score && entry.secret->GetName() < best->secret->GetName())) {
+			best = make_uniq<SecretEntry>(entry);
+			best_score = score;
+		}
+	}
+	return best;
 }
 
 static bool SecretString(optional_ptr<const KeyValueSecret> secret, const char *key, string &out) {
@@ -253,8 +299,9 @@ WebHdfsConfig ResolveWebHdfsConfig(DatabaseInstance &db, optional_ptr<FileOpener
 	config.authority = url.authority;
 	config.use_ssl = url.Secure();
 
-	SecretMatch match;
-	auto secret = LookupSecret(db, opener, url.ToString(), match);
+	auto secret_entry = LookupSecret(db, opener, url.ToString());
+	optional_ptr<const KeyValueSecret> secret =
+	    secret_entry ? dynamic_cast<const KeyValueSecret *>(secret_entry->secret.get()) : nullptr;
 	if (secret) {
 		config.secret_name = secret->GetName().GetIdentifierName();
 	}

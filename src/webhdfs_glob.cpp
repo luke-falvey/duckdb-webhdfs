@@ -269,6 +269,14 @@ GlobPattern GlobPattern::Compile(const std::string &pattern, bool include_hidden
 	std::vector<size_t> literal_prefix;
 	for (auto &alt : expanded) {
 		auto components = SplitComponents(alt);
+		for (auto &component : components) {
+			// URL parsing resolves '.' and '..'; one made by brace expansion or escaping (e.g. `{..,x}`) would name a
+			// directory outside the one the pattern spells out
+			auto name = UnescapeGlob(component);
+			if (name == "." || name == "..") {
+				throw GlobError("'" + name + "' is not allowed as a glob pattern component ('" + alt + "')");
+			}
+		}
 		size_t literal_count = 0;
 		while (literal_count < components.size() && !HasUnescaped(components[literal_count], "*?[")) {
 			literal_count++;

@@ -18,6 +18,12 @@ SELECT webhdfs_exists('webhdfs://localhost:1/x.csv');
 ----
 webhdfs requires the httpfs extension
 
+# with autoloading off, no load or install is attempted, and the error says why
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:1/x.csv');
+----
+(autoload_known_extensions is disabled)
+
 # with autoloading allowed, the first request loads httpfs (here: the copy linked into the test binary)
 statement ok
 SET autoload_known_extensions = true;

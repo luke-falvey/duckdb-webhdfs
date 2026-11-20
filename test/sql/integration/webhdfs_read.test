@@ -100,6 +100,33 @@ RESET webhdfs_read_buffer_size;
 statement ok
 RESET webhdfs_reuse_redirects;
 
+# with the small-file cache off, small files read whole are fetched again on every open, with the same result
+statement ok
+SET webhdfs_small_file_cache_size = 0;
+
+query II
+SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5	10
+
+query IT
+SELECT * FROM 'webhdfs://localhost:9870/test/data/records.json' ORDER BY a;
+----
+1	x
+2	y
+
+# a cache smaller than the file: nothing is cached
+statement ok
+SET webhdfs_small_file_cache_size = 10;
+
+query II
+SELECT count(*), sum(id) FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+----
+5	10
+
+statement ok
+RESET webhdfs_small_file_cache_size;
+
 # globbing: hidden entries (_SUCCESS, _temporary.csv, .hidden.csv) are skipped
 query T
 SELECT parse_filename(file) FROM glob('webhdfs://localhost:9870/test/data/*') ORDER BY 1;
@@ -235,3 +262,25 @@ SELECT count(*) FROM glob('webhdfs://localhost:14000/test/many/*');
 ----
 200
 
+# allowed_directories applies to the path that is requested: '..' is resolved before the check
+# (keep this last: external access cannot be re-enabled)
+statement ok
+SET allowed_directories = ['webhdfs://localhost:9870/test/data/'];
+
+statement ok
+SET enable_external_access = false;
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/sub/../people.csv');
+----
+5
+
+statement error
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/../many/f001.txt');
+----
+disabled by configuration
+
+statement error
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/sub/../../many/f001.txt');
+----
+disabled by configuration

@@ -15,13 +15,18 @@ class WebHdfsFileHandle : public FileHandle {
 public:
 	WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpenFlags flags, shared_ptr<WebHdfsClient> client,
 	                  string hdfs_path);
+	//! A writer that was neither closed nor aborted is abandoned: it is aborted, never committed
 	~WebHdfsFileHandle() override;
 
+	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle stays
+	//! open so that Abort() can still remove the file.
 	void Close() override;
 	//! Send buffered writes
 	void Flush();
-	//! Drop buffered writes and remove a file this handle created
+	//! Drop buffered writes and remove a file this handle created (best effort)
 	void Abort();
+	//! Throw if the handle can't take more writes (closed, or an earlier CREATE/APPEND failed)
+	void CheckWritable() const;
 
 	shared_ptr<WebHdfsClient> client;
 	string hdfs_path;
@@ -39,14 +44,25 @@ public:
 
 	// writing
 	bool writing = false;
-	//! The file exists on the server (created by the first flush, or pre-existing when appending)
+	//! The file exists on the server (created by the first flush, or pre-existing when appending): later chunks
+	//! are APPENDed
 	bool created = false;
+	//! Abort() deletes the file: this handle created it, or sent a CREATE that replaces it
+	bool delete_on_abort = false;
 	bool append = false;
+	//! CREATE replaces an existing file; false for ExclusiveCreate / ReturnNullIfExists, so HDFS enforces it
 	bool overwrite = true;
 	bool closed = false;
+	//! A CREATE or APPEND failed. The server may have applied part of it, so nothing is re-sent: later writes and
+	//! Close() throw.
+	bool failed = false;
 	vector<data_t> write_buffer;
 	//! Bytes sent to the server
 	idx_t written = 0;
+
+private:
+	//! Send `write_buffer` as one CREATE or APPEND; marks the handle failed if that throws
+	void SendBuffer();
 };
 
 class WebHdfsFileSystem : public FileSystem {
@@ -99,6 +115,8 @@ public:
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 
 	bool CanHandleFile(const string &fpath) override;
+	//! The URL with '.' and '..' resolved as ParseWebHdfsUrl does, so allowed_directories checks the path we request
+	string CanonicalizePath(const string &path, optional_ptr<FileOpener> opener = nullptr) override;
 	bool CanSeek() override {
 		return true;
 	}

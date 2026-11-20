@@ -25,43 +25,69 @@ WebHdfsFileHandle::WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpe
 }
 
 WebHdfsFileHandle::~WebHdfsFileHandle() {
-	try {
-		Close();
-	} catch (...) { // NOLINT: destructors must not throw; an explicit Close() reports the error
+	// No commit from a destructor: a write handle destroyed without Close() belongs to a write that failed or was
+	// interrupted (the success paths in DuckDB close explicitly), so its buffer is dropped and a file it created is
+	// removed. Abort() swallows errors and sends a request only when there is something to remove.
+	if (!closed) {
+		Abort();
 	}
+}
+
+void WebHdfsFileHandle::CheckWritable() const {
+	if (!writing || closed) {
+		throw IOException("WebHDFS: \"%s\" is not open for writing", path);
+	}
+	if (failed) {
+		throw IOException("WebHDFS: a previous write to \"%s\" failed; the file is incomplete", path);
+	}
+}
+
+void WebHdfsFileHandle::SendBuffer() {
+	try {
+		if (!created) {
+			// A CREATE that replaces the target may have taken effect even if it fails part-way (the DataNode leg),
+			// so Abort() must remove the file from now on. Without overwrite the file might be someone else's
+			// (FileAlreadyExists), so it is only ours once the CREATE succeeded.
+			delete_on_abort = overwrite;
+			client->Create(hdfs_path, write_buffer.data(), write_buffer.size(), overwrite);
+			created = true;
+			delete_on_abort = true;
+		} else {
+			client->Append(hdfs_path, write_buffer.data(), write_buffer.size());
+		}
+	} catch (...) {
+		// The server may have applied the chunk: never send it again
+		failed = true;
+		write_buffer.clear();
+		throw;
+	}
+	written += write_buffer.size();
+	write_buffer.clear();
 }
 
 void WebHdfsFileHandle::Flush() {
 	if (!writing || write_buffer.empty()) {
 		return;
 	}
-	if (!created) {
-		client->Create(hdfs_path, write_buffer.data(), write_buffer.size(), overwrite);
-		created = true;
-	} else {
-		client->Append(hdfs_path, write_buffer.data(), write_buffer.size());
-	}
-	written += write_buffer.size();
-	write_buffer.clear();
+	CheckWritable();
+	SendBuffer();
 }
 
 void WebHdfsFileHandle::Close() {
 	if (closed) {
 		return;
 	}
-	closed = true;
 	if (!writing) {
+		closed = true;
 		return;
 	}
-	if (!created) {
-		// also creates empty files
-		client->Create(hdfs_path, write_buffer.data(), write_buffer.size(), overwrite);
-		created = true;
-		written += write_buffer.size();
-		write_buffer.clear();
-		return;
+	CheckWritable();
+	if (!created || !write_buffer.empty()) {
+		// the CREATE of a file that fit in one chunk also creates empty files
+		SendBuffer();
 	}
-	Flush();
+	// only now: if the final request failed, Abort() (or the destructor) still removes the incomplete file
+	closed = true;
 }
 
 void WebHdfsFileHandle::Abort() {
@@ -70,7 +96,7 @@ void WebHdfsFileHandle::Abort() {
 	}
 	closed = true;
 	write_buffer.clear();
-	if (writing && created && !append) {
+	if (writing && delete_on_abort) {
 		try {
 			client->Delete(hdfs_path, false);
 		} catch (...) { // NOLINT: best effort cleanup of an abandoned write
@@ -148,6 +174,16 @@ bool WebHdfsFileSystem::CanHandleFile(const string &fpath) {
 	return webhdfs::HasWebHdfsScheme(fpath) || !webhdfs::SchemeRootOf(fpath).empty();
 }
 
+string WebHdfsFileSystem::CanonicalizePath(const string &path, optional_ptr<FileOpener> opener) {
+	WebHdfsUrl parsed;
+	string error;
+	if (!webhdfs::ParseWebHdfsUrl(path, parsed, error)) {
+		// not a URL we would request (e.g. '..' above the root): opening it fails with the parse error
+		return path;
+	}
+	return parsed.ToString();
+}
+
 void WebHdfsFileSystem::ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
                                          const std::function<void(OpenFileInfo &info)> &callback) {
 	std::set<string> names;
@@ -184,6 +220,14 @@ OpenFileInfo WebHdfsFileSystem::MakeOpenFileInfo(const string &url, const FileSt
 	return info;
 }
 
+//! A file length from the server, checked: a bad value is the server's error, not an internal one
+static idx_t FileLength(const FileStatus &status, const string &url) {
+	if (status.length < 0) {
+		throw IOException("WebHDFS: the server reported an invalid length (%lld) for \"%s\"", status.length, url);
+	}
+	return UnsafeNumericCast<idx_t>(status.length);
+}
+
 unique_ptr<FileHandle> WebHdfsFileSystem::OpenFile(const string &path, FileOpenFlags flags,
                                                    optional_ptr<FileOpener> opener) {
 	return OpenFileExtended(OpenFileInfo(path), std::move(flags), opener);
@@ -204,7 +248,8 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 		}
 		handle->writing = true;
 		handle->append = flags.OpenForAppending();
-		handle->overwrite = true;
+		// HDFS checks existence atomically at CREATE: the check below only gives the early error / nullptr
+		handle->overwrite = !(flags.ExclusiveCreate() || flags.ReturnNullIfExists());
 		if (handle->append || flags.ReturnNullIfExists() || flags.ExclusiveCreate()) {
 			FileStatus status;
 			bool exists = client->TryGetFileStatus(parsed.path, status);
@@ -219,7 +264,7 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 			}
 			if (exists && handle->append) {
 				handle->created = true;
-				handle->written = NumericCast<idx_t>(status.length);
+				handle->written = FileLength(status, file.path);
 				handle->length = handle->written;
 				handle->position = handle->length;
 			}
@@ -248,7 +293,7 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 	if (status.is_dir) {
 		throw IOException("Cannot open file \"%s\": it is a directory", file.path);
 	}
-	handle->length = NumericCast<idx_t>(status.length);
+	handle->length = FileLength(status, file.path);
 	handle->modification_time_ms = status.modification_time;
 	return std::move(handle);
 }
@@ -262,7 +307,7 @@ void WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_byte
 		return;
 	}
 	auto bytes = NumericCast<idx_t>(nr_bytes);
-	if (location + bytes > handle.length) {
+	if (bytes > handle.length || location > handle.length - bytes) {
 		throw IOException("WebHDFS: read of %llu bytes at offset %llu is past the end of \"%s\" (%llu bytes)", bytes,
 		                  location, handle.path, handle.length);
 	}
@@ -272,45 +317,50 @@ void WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_byte
 		handle.client->ReadRange(handle.hdfs_path, location, bytes, out, GetVersionTag(handle));
 		return;
 	}
-	lock_guard<mutex> guard(handle.buffer_lock);
-	if (location < handle.read_buffer_offset ||
-	    location + bytes > handle.read_buffer_offset + handle.read_buffer_length) {
-		// Choose the window to fetch. Formats with a footer (Parquet) read the end of a file first and then jump
-		// back, so a small file is fetched whole and a read near the end of a larger one takes the file's tail.
-		idx_t start = location;
-		if (handle.length <= read_ahead) {
-			start = 0;
-		} else if (location + bytes > handle.length - read_ahead) {
-			// the window must still contain the whole read
-			start = MinValue<idx_t>(location, handle.length - read_ahead);
+	{
+		lock_guard<mutex> guard(handle.buffer_lock);
+		if (location >= handle.read_buffer_offset &&
+		    location + bytes <= handle.read_buffer_offset + handle.read_buffer_length) {
+			memcpy(out, handle.read_buffer.data() + (location - handle.read_buffer_offset), bytes);
+			return;
 		}
-		auto fetch = MinValue<idx_t>(read_ahead, handle.length - start);
-		if (handle.read_buffer.size() < fetch) {
-			handle.read_buffer.resize(fetch);
-		}
-		handle.read_buffer_length = 0;
-		auto whole_file = start == 0 && fetch == handle.length;
-		auto version = GetVersionTag(handle);
-		auto &endpoint = handle.client->Endpoint();
-		shared_ptr<const string> cached;
-		string cache_key;
-		if (whole_file) {
-			cache_key = handle.client->CacheKey(handle.hdfs_path, version);
-			cached = endpoint.GetSmallFile(cache_key);
-		}
-		if (cached && cached->size() == fetch) {
-			memcpy(handle.read_buffer.data(), cached->data(), fetch);
-		} else {
-			handle.client->ReadRange(handle.hdfs_path, start, fetch, handle.read_buffer.data(), version);
-			if (whole_file) {
-				endpoint.PutSmallFile(
-				    cache_key, make_shared_ptr<const string>(const_char_ptr_cast(handle.read_buffer.data()), fetch));
-			}
-		}
-		handle.read_buffer_offset = start;
-		handle.read_buffer_length = fetch;
 	}
-	memcpy(out, handle.read_buffer.data() + (location - handle.read_buffer_offset), bytes);
+	// A miss: fetch the window without holding the lock, so that other threads reading this handle (Parquet
+	// reads one handle from several threads) are not stalled behind a network round trip. Two threads may fetch
+	// the same window at once; the last one to finish installs its copy.
+	// Choose the window to fetch. Formats with a footer (Parquet) read the end of a file first and then jump
+	// back, so a small file is fetched whole and a read near the end of a larger one takes the file's tail.
+	idx_t start = location;
+	if (handle.length <= read_ahead) {
+		start = 0;
+	} else if (location + bytes > handle.length - read_ahead) {
+		// the window must still contain the whole read
+		start = MinValue<idx_t>(location, handle.length - read_ahead);
+	}
+	auto fetch = MinValue<idx_t>(read_ahead, handle.length - start);
+	vector<data_t> window(fetch);
+	auto whole_file = start == 0 && fetch == handle.length;
+	auto version = GetVersionTag(handle);
+	auto &endpoint = handle.client->Endpoint();
+	shared_ptr<const string> cached;
+	string cache_key;
+	if (whole_file) {
+		cache_key = handle.client->CacheKey(handle.hdfs_path, version);
+		cached = endpoint.GetSmallFile(cache_key);
+	}
+	if (cached && cached->size() == fetch) {
+		memcpy(window.data(), cached->data(), fetch);
+	} else {
+		handle.client->ReadRange(handle.hdfs_path, start, fetch, window.data(), version);
+		if (whole_file) {
+			endpoint.PutSmallFile(cache_key, make_shared_ptr<const string>(const_char_ptr_cast(window.data()), fetch));
+		}
+	}
+	memcpy(out, window.data() + (location - start), bytes);
+	lock_guard<mutex> guard(handle.buffer_lock);
+	handle.read_buffer = std::move(window);
+	handle.read_buffer_offset = start;
+	handle.read_buffer_length = fetch;
 }
 
 int64_t WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_bytes) {
@@ -326,9 +376,7 @@ int64_t WebHdfsFileSystem::Read(FileHandle &handle_p, void *buffer, int64_t nr_b
 
 int64_t WebHdfsFileSystem::Write(FileHandle &handle_p, void *buffer, int64_t nr_bytes) {
 	auto &handle = handle_p.Cast<WebHdfsFileHandle>();
-	if (!handle.writing || handle.closed) {
-		throw IOException("WebHDFS: \"%s\" is not open for writing", handle.path);
-	}
+	handle.CheckWritable();
 	if (nr_bytes <= 0) {
 		return 0;
 	}
@@ -501,16 +549,46 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 		throw NotImplementedException("WebHDFS can only move files within one cluster (\"%s\" -> \"%s\")", source,
 		                              target);
 	}
-	if (client->Rename(source_url.path, target_url.path)) {
+	// RENAME with renameoptions=OVERWRITE runs the NameNode's rename2: one request that replaces a file target
+	// atomically (what StorageManager and COPY ... USE_TMP_FILE expect of MoveFile) and fails for a directory
+	// target, where the old rename would move the source into the directory.
+	auto outcome = client->RenameOverwrite(source_url.path, target_url.path);
+	switch (outcome) {
+	case WebHdfsRenameOutcome::RENAMED:
+	case WebHdfsRenameOutcome::LEGACY_TRUE:
+		// LEGACY_TRUE: a gateway (HttpFS) ignored the option and ran the old rename, which succeeded. With a
+		// directory target that old rename moved the source into it; gateways give no atomic alternative.
 		return;
+	case WebHdfsRenameOutcome::OPTION_REJECTED:
+		// A gateway that rejects the option: fall back to the old rename (and the non-atomic replace below)
+		if (client->Rename(source_url.path, target_url.path)) {
+			return;
+		}
+		break;
+	case WebHdfsRenameOutcome::NOT_FOUND:
+	case WebHdfsRenameOutcome::LEGACY_FALSE:
+		break;
 	}
-	// HDFS refuses to rename onto an existing file; DuckDB expects the target to be replaced
+	// The source is gone or the rename was refused. A RENAME replayed after a lost response (by the HTTP retries
+	// or a NameNode failover) finds the source already moved: source gone and target present means it succeeded.
 	FileStatus status;
 	if (!client->TryGetFileStatus(source_url.path, status)) {
+		FileStatus target_status;
+		if (client->TryGetFileStatus(target_url.path, target_status) && !target_status.is_dir) {
+			return;
+		}
 		throw IOException("Could not move \"%s\": No such file or directory", source);
 	}
+	if (outcome == WebHdfsRenameOutcome::NOT_FOUND) {
+		throw IOException("Could not move \"%s\" to \"%s\": the target directory does not exist", source, target);
+	}
+	// Fallback for gateways without rename2, whose old rename refuses an existing target: delete it, then rename.
+	// This is not atomic: if the second rename fails, the old target is already gone.
 	FileStatus target_status;
-	if (client->TryGetFileStatus(target_url.path, target_status) && !target_status.is_dir) {
+	if (client->TryGetFileStatus(target_url.path, target_status)) {
+		if (target_status.is_dir) {
+			throw IOException("Could not move \"%s\" to \"%s\": the target is a directory", source, target);
+		}
 		client->Delete(target_url.path, false);
 		if (client->Rename(source_url.path, target_url.path)) {
 			return;

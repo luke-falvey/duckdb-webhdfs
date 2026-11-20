@@ -84,6 +84,32 @@ SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/{..,sub}/*');
 ----
 is not allowed as a glob pattern component
 
+# the listing schema (webhdfs_ls and webhdfs_stat share it)
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_stat('webhdfs://localhost:9870/test/data/people.csv'));
+----
+path	VARCHAR
+name	VARCHAR
+type	VARCHAR
+size	BIGINT
+owner	VARCHAR
+group	VARCHAR
+permissions	VARCHAR
+mode	USMALLINT
+replication	INTEGER
+block_size	BIGINT
+last_modified	TIMESTAMP WITH TIME ZONE
+last_accessed	TIMESTAMP WITH TIME ZONE
+file_id	BIGINT
+children_num	BIGINT
+storage_policy	INTEGER
+ec_policy	VARCHAR
+
+query I
+SELECT count(*) FROM ((SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_stat('webhdfs://localhost:9870/test/data'))) EXCEPT ALL (SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data'))));
+----
+0
+
 # calls that differ only in named parameters are different calls
 query II
 SELECT (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data')), (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data', include_hidden := true));

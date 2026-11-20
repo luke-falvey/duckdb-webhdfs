@@ -139,7 +139,9 @@ public:
 		return "WebHdfsFileSystem";
 	}
 
-	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime and type travel with it
+	//! The version tag of a file with this mtime and length (GetVersionTag, and the "etag" of a listed file)
+	static string VersionTag(int64_t modification_time_ms, idx_t length);
+	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime, type and etag travel with it
 	static OpenFileInfo MakeOpenFileInfo(const string &url, const webhdfs::FileStatus &status);
 
 protected:

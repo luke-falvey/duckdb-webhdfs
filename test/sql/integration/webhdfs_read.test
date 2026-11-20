@@ -77,6 +77,22 @@ SELECT count(DISTINCT label), sum(id % 7) FROM 'webhdfs://localhost:9870/test/da
 ----
 100000	299995
 
+# several threads reading one handle at once: a file with many row groups, at several read-ahead sizes
+foreach bufsize 0 7 65536 1000000
+
+statement ok
+SET webhdfs_read_buffer_size = {bufsize};
+
+query III
+SELECT count(*), sum(id), count(DISTINCT label) FROM 'webhdfs://localhost:9870/test/rg/row_groups.parquet';
+----
+30000	449985000	30000
+
+endloop
+
+statement ok
+RESET webhdfs_read_buffer_size;
+
 # no read-ahead and no redirect reuse give the same result
 statement ok
 SET webhdfs_read_buffer_size = 0;
@@ -297,6 +313,12 @@ query I
 SELECT count(*) FROM glob('webhdfs://localhost:14000/test/many/*');
 ----
 200
+
+# a file's last_modified is the same whether it comes from a listing (glob) or from GETFILESTATUS
+query II
+SELECT (SELECT last_modified FROM read_blob('webhdfs://localhost:9870/test/data/people.csv')) = s.last_modified, (SELECT last_modified FROM read_blob('webhdfs://localhost:9870/test/data/peo*.csv')) = s.last_modified FROM webhdfs_stat('webhdfs://localhost:9870/test/data/people.csv') s;
+----
+true	true
 
 # allowed_directories applies to the path that is requested: '..' is resolved before the check
 # (keep this last: external access cannot be re-enabled)

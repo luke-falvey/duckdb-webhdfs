@@ -267,6 +267,9 @@ OpenFileInfo WebHdfsFileSystem::MakeOpenFileInfo(const string &url, const FileSt
 	options.emplace("type", Value(status.is_dir ? "directory" : "file"));
 	options.emplace("file_size", Value::BIGINT(status.length));
 	options.emplace("last_modified", Value::TIMESTAMP(WebHdfsTimestamp(status.modification_time)));
+	// what GetVersionTag returns for the opened file: caches that validate listed files (Parquet metadata) compare them
+	options.emplace(
+	    "etag", Value(VersionTag(status.modification_time, NumericCast<idx_t>(MaxValue<int64_t>(status.length, 0)))));
 	return info;
 }
 
@@ -461,9 +464,13 @@ timestamp_t WebHdfsFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	return WebHdfsTimestamp(handle.Cast<WebHdfsFileHandle>().modification_time_ms);
 }
 
+string WebHdfsFileSystem::VersionTag(int64_t modification_time_ms, idx_t length) {
+	return std::to_string(modification_time_ms) + ":" + std::to_string(length);
+}
+
 string WebHdfsFileSystem::GetVersionTag(FileHandle &handle_p) {
 	auto &handle = handle_p.Cast<WebHdfsFileHandle>();
-	return std::to_string(handle.modification_time_ms) + ":" + std::to_string(handle.length);
+	return VersionTag(handle.modification_time_ms, handle.length);
 }
 
 FileType WebHdfsFileSystem::GetFileType(FileHandle &handle) {

@@ -619,13 +619,35 @@ void WebHdfsFileSystem::MoveFile(const string &source, const string &target, opt
 	throw IOException("Could not move \"%s\" to \"%s\"", source, target);
 }
 
+//! Hands one listed entry to a ListFiles callback. Autocomplete ends a directory suggestion with
+//! fs.PathSeparator(name), passing the bare entry name, so the virtual file system asks the local file system,
+//! which answers "\\" on Windows. While the callback runs for a directory, this file system claims exactly that
+//! name on this thread (CanHandleFile), so the separator comes from PathSeparator here ("/"). Other names and
+//! other threads route as before. Core reaches this through ListFilesExtended (the string/bool ListFiles of the
+//! virtual and opener file systems wraps it), so the guard lives here rather than in ListFiles.
+static void ListEntry(const std::function<void(OpenFileInfo &info)> &callback, OpenFileInfo &info) {
+	if (!FileSystem::IsDirectory(info)) {
+		callback(info);
+		return;
+	}
+	auto previous = listed_directory_name;
+	listed_directory_name = &info.path;
+	try {
+		callback(info);
+	} catch (...) {
+		listed_directory_name = previous;
+		throw;
+	}
+	listed_directory_name = previous;
+}
+
 bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
                                           const std::function<void(OpenFileInfo &info)> &callback,
                                           optional_ptr<FileOpener> opener) {
 	auto scheme = webhdfs::SchemeRootOf(directory);
 	if (!scheme.empty()) {
 		// "webhdfs:/" is what autocomplete lists for "webhdfs://<Tab>": offer the clusters this session knows
-		ListClusterNames(scheme, opener, callback);
+		ListClusterNames(scheme, opener, [&](OpenFileInfo &info) { ListEntry(callback, info); });
 		return true;
 	}
 	WebHdfsUrl parsed;
@@ -636,7 +658,7 @@ bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
 				continue;
 			}
 			auto info = MakeOpenFileInfo(entry.path_suffix, entry);
-			callback(info);
+			ListEntry(callback, info);
 		}
 	});
 }
@@ -644,27 +666,7 @@ bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
 bool WebHdfsFileSystem::ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,
                                   FileOpener *opener) {
 	return ListFilesExtended(
-	    directory,
-	    [&](OpenFileInfo &info) {
-		    if (!FileSystem::IsDirectory(info)) {
-			    callback(info.path, false);
-			    return;
-		    }
-		    // Autocomplete ends a directory suggestion with fs.PathSeparator(name), passing the bare entry name, so
-		    // the virtual file system asks the local file system, which answers "\\" on Windows. While the callback
-		    // runs, this file system claims exactly that name on this thread, so the separator comes from
-		    // PathSeparator here ("/"). Nothing else changes: other names and other threads route as before.
-		    auto previous = listed_directory_name;
-		    listed_directory_name = &info.path;
-		    try {
-			    callback(info.path, true);
-		    } catch (...) {
-			    listed_directory_name = previous;
-			    throw;
-		    }
-		    listed_directory_name = previous;
-	    },
-	    opener);
+	    directory, [&](OpenFileInfo &info) { callback(info.path, FileSystem::IsDirectory(info)); }, opener);
 }
 
 vector<OpenFileInfo> WebHdfsFileSystem::Glob(const string &path, FileOpener *opener) {

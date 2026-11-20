@@ -241,13 +241,16 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	options.skip_permission_errors = call.NamedBool("skip_permission_errors", settings.skip_permission_errors);
 	options.parallelism = settings.list_parallelism;
 	options.files_only = false;
+	FileStatus status;
+	optional_ptr<const FileStatus> root_status;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
-		auto status = client->GetFileStatus(parsed.path);
+		status = client->GetFileStatus(parsed.path);
 		if (!status.is_dir) {
 			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
+		root_status = &status;
 	}
-	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options);
+	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));
 }
 

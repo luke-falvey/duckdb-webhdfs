@@ -179,7 +179,13 @@ shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, opt
 	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint);
 }
 
+//! The directory name ListFiles is handing to its callback on this thread, if any (see ListFiles)
+static thread_local const string *listed_directory_name = nullptr;
+
 bool WebHdfsFileSystem::CanHandleFile(const string &fpath) {
+	if (listed_directory_name && fpath == *listed_directory_name) {
+		return true;
+	}
 	return webhdfs::HasWebHdfsScheme(fpath) || !webhdfs::SchemeRootOf(fpath).empty();
 }
 
@@ -638,7 +644,27 @@ bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
 bool WebHdfsFileSystem::ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,
                                   FileOpener *opener) {
 	return ListFilesExtended(
-	    directory, [&](OpenFileInfo &info) { callback(info.path, FileSystem::IsDirectory(info)); }, opener);
+	    directory,
+	    [&](OpenFileInfo &info) {
+		    if (!FileSystem::IsDirectory(info)) {
+			    callback(info.path, false);
+			    return;
+		    }
+		    // Autocomplete ends a directory suggestion with fs.PathSeparator(name), passing the bare entry name, so
+		    // the virtual file system asks the local file system, which answers "\\" on Windows. While the callback
+		    // runs, this file system claims exactly that name on this thread, so the separator comes from
+		    // PathSeparator here ("/"). Nothing else changes: other names and other threads route as before.
+		    auto previous = listed_directory_name;
+		    listed_directory_name = &info.path;
+		    try {
+			    callback(info.path, true);
+		    } catch (...) {
+			    listed_directory_name = previous;
+			    throw;
+		    }
+		    listed_directory_name = previous;
+	    },
+	    opener);
 }
 
 vector<OpenFileInfo> WebHdfsFileSystem::Glob(const string &path, FileOpener *opener) {

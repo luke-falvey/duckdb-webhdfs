@@ -45,10 +45,15 @@ std::string SchemeRootOf(const std::string &path);
 //! scope is for another scheme or names no authority ("webhdfs://").
 std::string ScopeAuthority(const std::string &scope, const std::string &scheme);
 
-//! Parse a webhdfs:// or swebhdfs:// URL. Returns false and sets `error` when the URL is invalid.
+//! Parse a webhdfs:// or swebhdfs:// URL. Returns false and sets `error` when the URL is invalid. The path is
+//! normalized (TryNormalizePath): '.' and '..' are resolved here, so no later check sees a path the server would
+//! resolve differently; a '..' above the root is an error.
 bool ParseWebHdfsUrl(const std::string &url, WebHdfsUrl &out, std::string &error);
 
-//! Normalize an absolute path: collapse repeated '/', drop '.' segments and a trailing '/'.
+//! Normalize an absolute path: collapse repeated '/', drop '.' segments and a trailing '/', and resolve '..' against
+//! the segment before it. Returns false when a '..' would go above the root.
+bool TryNormalizePath(const std::string &path, std::string &out);
+//! TryNormalizePath, with a '..' at the root ignored (as POSIX does for "/..")
 std::string NormalizePath(const std::string &path);
 //! "/a/b" -> "/a", "/a" -> "/", "/" -> "/"
 std::string ParentPath(const std::string &path);
@@ -74,9 +79,6 @@ std::string BuildRestUrl(const std::string &base_url, const std::string &gateway
 //! Replace (or add) query parameters in an existing URL, e.g. to move a DataNode redirect to a new offset.
 std::string ReplaceQueryParams(const std::string &url,
                                const std::vector<std::pair<std::string, std::string>> &replacements);
-
-//! Remove credential-bearing query parameters (delegation, user.name, doas, token) for error messages.
-std::string RedactUrl(const std::string &url);
 
 //! Split a URL into "scheme://host:port" and the rest. Returns false if it has no scheme.
 bool SplitUrlHost(const std::string &url, std::string &scheme_host_port, std::string &rest);

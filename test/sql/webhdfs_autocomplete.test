@@ -55,6 +55,7 @@ FROM sql_auto_complete($$SELECT * FROM read_parquet('webhdfs://$$) WHERE suggest
 statement error
 SELECT * FROM read_csv('webhdfs://localhost:2/x.csv');
 ----
+no NameNode could serve the request
 
 query I
 SELECT list(suggestion) FROM sql_auto_complete($$SELECT * FROM 'webhdfs://$$) WHERE suggestion LIKE 'localhost%';

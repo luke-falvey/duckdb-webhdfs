@@ -40,7 +40,11 @@ public:
 	void ForEachMember(const std::function<void(const std::string &, JsonValue)> &fn) const;
 
 	std::string GetString(const std::string &default_value = "") const;
+	//! An integer (number or numeric string); `default_value` when missing, null or not numeric. A number that
+	//! doesn't fit int64 also gives `default_value`: use TryGetInt where that must be an error.
 	int64_t GetInt(int64_t default_value = 0) const;
+	//! Like GetInt, but returns false when the value is a number (or numeric string) outside the int64 range
+	bool TryGetInt(int64_t &out, int64_t default_value = 0) const;
 	double GetDouble(double default_value = 0) const;
 	bool GetBool(bool default_value = false) const;
 	//! Serialize this value back to JSON text
@@ -69,8 +73,9 @@ struct FileStatus {
 	bool is_dir = false;
 	bool is_symlink = false;
 	int64_t length = 0;
-	//! epoch milliseconds
+	//! epoch milliseconds, within +-MAX_EPOCH_MS
 	int64_t modification_time = 0;
+	//! 0 when HDFS doesn't track it (directories, or dfs.namenode.accesstime.precision = 0)
 	int64_t access_time = 0;
 	std::string owner;
 	std::string group;
@@ -91,8 +96,15 @@ struct RemoteException {
 	std::string message;
 };
 
-//! Parse a FileStatus JSON object
-FileStatus ParseFileStatusObject(JsonValue obj);
+//! Largest |epoch milliseconds| a FileStatus time may have (fits a DuckDB TIMESTAMP in microseconds)
+constexpr int64_t MAX_EPOCH_MS = INT64_MAX / 1000 - 1;
+
+//! A name the server may return as a pathSuffix: no '/' or NUL, not "." or "..". "" (the listed path is a file) is
+//! valid.
+bool IsValidPathSuffix(const std::string &suffix);
+//! Parse a FileStatus JSON object. Returns false (and sets `error`) when a field is out of range, the length is
+//! negative or the pathSuffix is not a plain name.
+bool ParseFileStatusObject(JsonValue obj, FileStatus &out, std::string &error);
 //! {"FileStatus": {...}}
 bool ParseFileStatus(const std::string &body, FileStatus &out, std::string &error);
 //! LISTSTATUS ({"FileStatuses":{"FileStatus":[...]}}) or LISTSTATUS_BATCH

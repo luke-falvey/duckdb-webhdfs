@@ -14,8 +14,9 @@ namespace duckdb {
 static void LoadInternal(ExtensionLoader &loader) {
 	auto &db = loader.GetDatabaseInstance();
 
-	// Step 1 of making sure httpfs is there: try to load (and install) it now, so its settings and secret types
-	// work right after LOAD webhdfs. Requests check again before they are sent (WebHdfsHttp::GetHttpUtil).
+	// Step 1 of making sure httpfs is there: load an httpfs that is already available (no install, so
+	// LOAD webhdfs never waits on the network), so its settings and secret types work right after LOAD webhdfs.
+	// Requests check again before they are sent and may install it then (WebHdfsHttp::GetHttpUtil).
 	WebHdfsHttp::TryLoadHttpfs(db);
 
 	WebHdfsSettings::Register(db);

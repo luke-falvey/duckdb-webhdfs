@@ -18,10 +18,12 @@ struct WebHdfsSettings {
 	static constexpr const char *WRITE_CHUNK_SIZE = "webhdfs_write_chunk_size";
 	static constexpr const char *REUSE_REDIRECTS = "webhdfs_reuse_redirects";
 	static constexpr const char *USER_NAME = "webhdfs_user_name";
+	static constexpr const char *SMALL_FILE_CACHE_SIZE = "webhdfs_small_file_cache_size";
 
 	static constexpr idx_t DEFAULT_LIST_PARALLELISM = 16;
 	static constexpr idx_t DEFAULT_READ_BUFFER_SIZE = idx_t(1) << 20;
 	static constexpr idx_t DEFAULT_WRITE_CHUNK_SIZE = idx_t(64) << 20;
+	static constexpr idx_t DEFAULT_SMALL_FILE_CACHE_SIZE = idx_t(64) << 20;
 
 	idx_t list_parallelism = DEFAULT_LIST_PARALLELISM;
 	bool include_hidden = false;
@@ -30,6 +32,7 @@ struct WebHdfsSettings {
 	idx_t write_chunk_size = DEFAULT_WRITE_CHUNK_SIZE;
 	bool reuse_redirects = true;
 	string user_name;
+	idx_t small_file_cache_size = DEFAULT_SMALL_FILE_CACHE_SIZE;
 
 	//! Current values (session settings through the opener, else global settings of `db`)
 	static WebHdfsSettings Load(optional_ptr<DatabaseInstance> db, optional_ptr<FileOpener> opener);

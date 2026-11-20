@@ -132,15 +132,20 @@ bool ParseWebHdfsUrl(const std::string &url, WebHdfsUrl &out, std::string &error
 		error = "invalid host or port '" + authority + "'";
 		return false;
 	}
+	std::string normalized;
+	if (!TryNormalizePath(path, normalized)) {
+		error = "'..' in path '" + path + "' goes above the root";
+		return false;
+	}
 	out.scheme = scheme;
 	out.authority = ToLower(authority);
 	out.host = ToLower(host);
 	out.port = port;
-	out.path = NormalizePath(path);
+	out.path = std::move(normalized);
 	return true;
 }
 
-std::string NormalizePath(const std::string &path) {
+static bool ResolvePath(const std::string &path, std::string &out, bool clamp_at_root) {
 	std::vector<std::string> segments;
 	size_t pos = 0;
 	while (pos <= path.size()) {
@@ -149,17 +154,36 @@ std::string NormalizePath(const std::string &path) {
 			next = path.size();
 		}
 		auto segment = path.substr(pos, next - pos);
-		if (!segment.empty() && segment != ".") {
+		if (segment == "..") {
+			if (!segments.empty()) {
+				segments.pop_back();
+			} else if (!clamp_at_root) {
+				return false;
+			}
+		} else if (!segment.empty() && segment != ".") {
 			segments.push_back(std::move(segment));
 		}
 		pos = next + 1;
 	}
-	std::string result;
+	out.clear();
 	for (auto &segment : segments) {
-		result += "/";
-		result += segment;
+		out += "/";
+		out += segment;
 	}
-	return result.empty() ? "/" : result;
+	if (out.empty()) {
+		out = "/";
+	}
+	return true;
+}
+
+bool TryNormalizePath(const std::string &path, std::string &out) {
+	return ResolvePath(path, out, false);
+}
+
+std::string NormalizePath(const std::string &path) {
+	std::string result;
+	ResolvePath(path, result, true);
+	return result;
 }
 
 std::string ParentPath(const std::string &path) {
@@ -317,39 +341,6 @@ std::string ReplaceQueryParams(const std::string &url,
 	for (size_t i = 0; i < parts.size(); i++) {
 		result += i == 0 ? "?" : "&";
 		result += parts[i];
-	}
-	return result;
-}
-
-std::string RedactUrl(const std::string &url) {
-	auto question = url.find('?');
-	if (question == std::string::npos) {
-		return url;
-	}
-	std::string result = url.substr(0, question + 1);
-	auto query = url.substr(question + 1);
-	size_t pos = 0;
-	bool first = true;
-	while (pos <= query.size()) {
-		auto amp = query.find('&', pos);
-		if (amp == std::string::npos) {
-			amp = query.size();
-		}
-		auto part = query.substr(pos, amp - pos);
-		if (!part.empty()) {
-			auto eq = part.find('=');
-			auto key = ToLower(eq == std::string::npos ? part : part.substr(0, eq));
-			if (!first) {
-				result += "&";
-			}
-			first = false;
-			if (key == "delegation" || key == "user.name" || key == "doas" || key == "token") {
-				result += part.substr(0, eq == std::string::npos ? part.size() : eq) + "=REDACTED";
-			} else {
-				result += part;
-			}
-		}
-		pos = amp + 1;
 	}
 	return result;
 }

@@ -13,6 +13,7 @@ Run it with -I from the repository root, or the `duckdb` directory there shadows
 import argparse
 import os
 import sys
+import tempfile
 
 import duckdb
 
@@ -25,6 +26,42 @@ def check(condition, message):
 
 def row(con, sql):
     return tuple(con.execute(sql).fetchall()[0])
+
+
+def check_persistent_secret_without_webhdfs(extension):
+    """A persistent webhdfs secret must not stop a session without webhdfs from reading its persistent secrets."""
+    config = {"allow_unsigned_extensions": "true", "autoload_known_extensions": "false"}
+    with tempfile.TemporaryDirectory() as secrets:
+        con = duckdb.connect(config=config)
+        con.execute(f"SET secret_directory = '{secrets}'")
+        con.execute(f"LOAD '{os.path.abspath(extension)}'")
+        con.execute(
+            "CREATE PERSISTENT SECRET smoke_persistent (TYPE webhdfs, SCOPE 'webhdfs://prod', "
+            "NAMENODES ['nn1:9870'], DELEGATION_TOKEN 'smoke-token')"
+        )
+        con.close()
+
+        con = duckdb.connect(config=config)
+        con.execute(f"SET secret_directory = '{secrets}'")
+        rows = con.execute("SELECT name, type, persistent, secret_string FROM duckdb_secrets()").fetchall()
+        check(
+            row(con, "SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'webhdfs' AND loaded") == (0,),
+            "a fresh session does not have webhdfs loaded",
+        )
+        check(
+            [r[:3] for r in rows] == [("smoke_persistent", "webhdfs", True)],
+            "a session without webhdfs reads a persistent webhdfs secret",
+        )
+        check("smoke-token" not in rows[0][3], "the delegation token stays redacted without webhdfs")
+
+        # loading webhdfs afterwards still resolves the reloaded secret by whole authority
+        con.execute(f"LOAD '{os.path.abspath(extension)}'")
+        check(
+            row(con, "SELECT name FROM which_secret('webhdfs://prod/x', 'webhdfs')") == ("smoke_persistent",),
+            "the reloaded secret matches its scope",
+        )
+        con.execute("DROP PERSISTENT SECRET smoke_persistent")
+        con.close()
 
 
 def main():
@@ -50,6 +87,8 @@ def main():
         row(con, "SELECT name FROM which_secret('webhdfs://smoke/x', 'webhdfs')") == ("smoke",),
         "webhdfs secrets match by authority",
     )
+
+    check_persistent_secret_without_webhdfs(args.extension)
 
     # without httpfs (and with autoloading off) a request must name what is missing
     try:

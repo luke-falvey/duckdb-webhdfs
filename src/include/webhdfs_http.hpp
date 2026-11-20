@@ -47,11 +47,12 @@ struct WebHdfsBodySink {
 
 class WebHdfsHttp {
 public:
-	//! Step 1 (when webhdfs loads): install and load httpfs if the autoload/autoinstall settings allow it. Never
-	//! throws; failure is reported later by GetHttpUtil.
+	//! Step 1 (when webhdfs loads): load an already available httpfs if autoload_known_extensions allows it (no
+	//! install, so LOAD webhdfs never waits on the network). Never throws; failure is reported by GetHttpUtil.
 	static void TryLoadHttpfs(DatabaseInstance &db) noexcept;
-	//! Step 2 (before every request): the HTTP provider, loading httpfs again if it is still missing.
-	//! Throws MissingExtensionException if no provider is available.
+	//! Step 2 (before every request): the HTTP provider. While httpfs is missing and autoloading is enabled, an
+	//! available copy is loaded; installing it (if autoinstall_known_extensions allows) is tried once per database.
+	//! Throws MissingExtensionException, with the cause of the failed load, if no provider is available.
 	static HTTPUtil &GetHttpUtil(DatabaseInstance &db);
 
 	//! HTTP parameters for requests made on behalf of `original_url` (a webhdfs:// URL): httpfs settings and any

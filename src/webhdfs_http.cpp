@@ -1,51 +1,110 @@
 #include "webhdfs_http.hpp"
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/settings.hpp"
+#include "duckdb/storage/object_cache.hpp"
 
 namespace duckdb {
 
-//! httpfs names its providers "HTTPFS", "HTTPFS-Curl", ... Other providers (core's built-in httplib client, used
-//! for extension installs) lack httpfs's settings, proxies and `http` secrets, so they don't count.
-static bool IsHttpfsProvider(const HTTPUtil &util) {
+//! httpfs installs its HTTPUtil when it loads; its providers are named "HTTPFS", "HTTPFS-Curl", "HTTPFS-Wasm".
+//! Other providers (core's built-in httplib client, used for extension installs) lack httpfs's settings, proxies
+//! and `http` secrets, so they don't count. httpfs being loaded is the primary signal; the name check covers a
+//! provider that httpfs registered without being recorded as loaded (e.g. statically linked).
+static bool IsHttpfsProvider(DatabaseInstance &db, const HTTPUtil &util) {
+	if (db.ExtensionIsLoaded("httpfs")) {
+		return true;
+	}
 	return StringUtil::StartsWith(StringUtil::Upper(util.GetName()), "HTTPFS");
 }
 
 static bool HasHttpProvider(DatabaseInstance &db) {
-	return IsHttpfsProvider(HTTPUtil::Get(db));
+	return IsHttpfsProvider(db, HTTPUtil::Get(db));
 }
 
-//! Load httpfs as the autoload settings allow: a copy that is already available (installed, or linked into this
-//! binary) first, so an offline machine never fails on the install step, then install-and-load.
-static void TryLoadHttpfsExtension(DatabaseInstance &db) noexcept {
-	if (ExtensionHelper::TryAutoLoadAvailableExtension(db, "httpfs")) {
-		return;
+static bool AutoloadEnabled(DatabaseInstance &db) {
+	return Settings::Get<AutoloadKnownExtensionsSetting>(db);
+}
+
+//! What the one install-and-load attempt per database left behind
+class WebHdfsHttpfsLoadState : public ObjectCacheEntry {
+public:
+	static string ObjectType() {
+		return "webhdfs_httpfs_load_state";
 	}
-	ExtensionHelper::TryAutoLoadExtension(db, "httpfs");
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		// never evicted
+		return optional_idx();
+	}
+
+	mutex lock;
+	bool attempted = false;
+	string error;
+};
+
+//! Load httpfs as the autoload settings allow. A copy that is already available (installed, or linked into this
+//! binary) is loaded on every call, which needs no network. Installing (as autoinstall_known_extensions allows) is
+//! tried once per database; its error is kept for later error messages. Returns the error, or "" on success.
+static string LoadHttpfsExtension(DatabaseInstance &db) {
+	if (ExtensionHelper::TryAutoLoadAvailableExtension(db, "httpfs")) {
+		return string();
+	}
+	auto state = db.GetObjectCache().GetOrCreate<WebHdfsHttpfsLoadState>(WebHdfsHttpfsLoadState::ObjectType());
+	if (!state) {
+		return "could not record the httpfs load state";
+	}
+	lock_guard<mutex> guard(state->lock);
+	if (state->attempted) {
+		return state->error;
+	}
+	state->attempted = true;
+	try {
+		ExtensionHelper::AutoLoadExtension(db, "httpfs");
+		state->error.clear();
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		state->error = error.RawMessage();
+		if (state->error.empty()) {
+			state->error = "unknown error";
+		}
+	}
+	return state->error;
 }
 
 void WebHdfsHttp::TryLoadHttpfs(DatabaseInstance &db) noexcept {
+	// load-only: LOAD webhdfs never waits for a network install; the first request may install (GetHttpUtil)
 	try {
 		if (HasHttpProvider(db)) {
 			return;
 		}
-		TryLoadHttpfsExtension(db);
+		ExtensionHelper::TryAutoLoadAvailableExtension(db, "httpfs");
 	} catch (...) { // NOLINT: loading httpfs here is best-effort; GetHttpUtil reports the failure
 	}
 }
 
 HTTPUtil &WebHdfsHttp::GetHttpUtil(DatabaseInstance &db) {
-	if (!HasHttpProvider(db)) {
-		TryLoadHttpfsExtension(db);
+	if (HasHttpProvider(db)) {
+		return HTTPUtil::Get(db);
 	}
-	auto &util = HTTPUtil::Get(db);
-	if (!IsHttpfsProvider(util)) {
-		throw MissingExtensionException(
-		    "webhdfs requires the httpfs extension for HTTP requests: INSTALL httpfs; LOAD httpfs;");
+	static constexpr const char *MESSAGE =
+	    "webhdfs requires the httpfs extension for HTTP requests: INSTALL httpfs; LOAD httpfs;";
+	if (!AutoloadEnabled(db)) {
+		throw MissingExtensionException("%s (autoload_known_extensions is disabled)", MESSAGE);
 	}
-	return util;
+	auto cause = LoadHttpfsExtension(db);
+	if (HasHttpProvider(db)) {
+		return HTTPUtil::Get(db);
+	}
+	if (cause.empty()) {
+		cause = "httpfs loaded, but did not register its HTTP client";
+	}
+	throw MissingExtensionException("%s (loading httpfs failed: %s)", MESSAGE, cause);
 }
 
 unique_ptr<HTTPParams> WebHdfsHttp::CreateParams(DatabaseInstance &db, optional_ptr<FileOpener> opener,

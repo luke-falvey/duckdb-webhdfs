@@ -132,7 +132,8 @@ Build changes:
 - Rename `waddle` to `webhdfs` in `CMakeLists.txt`, `extension_config.cmake`,
   the `Makefile`, CI, and tests. Delete the template's `waddle_*` sources and
   test.
-- Drop the OpenSSL dependency, which leaves `vcpkg.json` with no dependencies.
+- Drop the OpenSSL dependency, which leaves `vcpkg.json` with no dependencies. (Superseded: `vcpkg.json` lists
+  openssl and curl, which the statically linked httpfs needs in the test runner.)
 - In `extension_config.cmake`, also load httpfs from Git, pinned to the commit
   that matches DuckDB v2.0.0, so the test runner and the static shell have it:
 
@@ -204,8 +205,8 @@ Build changes:
 HDFS is append-only, and `PutRequestInfo` takes a whole body rather than a
 stream, so:
 
-- Buffer writes on the handle up to `webhdfs_write_chunk_size` (default 64 MiB),
-  using DuckDB's `Allocator`.
+- Buffer writes on the handle up to `webhdfs_write_chunk_size` (default 64 MiB).
+  (Implemented with a plain byte vector, not DuckDB's `Allocator`; see §10.)
 - The first flush, or `Close` if fewer bytes were written, sends `CREATE` with
   that chunk. Each later chunk sends `APPEND`. A file smaller than one chunk is
   therefore a single `CREATE`, which works even on clusters with append turned
@@ -216,8 +217,8 @@ stream, so:
   A failure leaves the file truncated and raises a clear error. DuckDB's
   `COPY … TO` writes then renames in some modes, so a partial file won't be
   mistaken for success.
-- Close order: flush the remainder, then mark the handle closed. A destructor
-  that hits an error swallows it, the same as in `HdfsFileHandle`.
+- Close order: flush the remainder, then mark the handle closed. (Refined: a
+  destructor commits only when no error is unwinding. See §10.)
 - Later improvement: on HttpFS gateways, a single PUT with `data=true` and
   `Content-Type: application/octet-stream` saves the redirect round trip.
 
@@ -273,7 +274,8 @@ come from httpfs settings and `http` secrets. We don't add duplicates of these.
 
 Kerberos (SPNEGO): the extension builds the `Authorization: Negotiate` token
 itself with GSSAPI, loaded with `dlopen` from the system's Kerberos library
-(`libgssapi_krb5` on Linux, `GSS.framework` on macOS, SSPI on Windows). Nothing
+(`libgssapi_krb5` on Linux, `GSS.framework` on macOS; Kerberos is not supported
+on Windows, see §10). Nothing
 is built through vcpkg, and platforms without Kerberos still load the extension.
 The flow:
 
@@ -281,9 +283,10 @@ The flow:
 2. Use the returned token as `delegation=` on every later request. That avoids a
    GSS handshake per request and also covers DataNode redirects.
 3. Renew the token before it expires (`RENEWDELEGATIONTOKEN`) and cancel it when
-   the database shuts down.
+   the database shuts down. (Superseded: see §10.)
 
 The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
+(Implemented instead as SPNEGO on every request for such gateways.)
 
 ### NameNode selection and high availability
 
@@ -332,7 +335,7 @@ The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
   | `webhdfs_write_chunk_size` | 64 MiB |
   | `webhdfs_reuse_redirects` | true |
   | `webhdfs_user_name` | unset |
-  | `webhdfs_partition_pruning` | true (§5c) |
+  | `webhdfs_small_file_cache_size` | 64 MiB (added later, see §10) |
 
 - **SQL functions.** `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)`,
   `webhdfs_stat(url)` and `webhdfs_exists(url)` return the same columns as the
@@ -397,7 +400,7 @@ row per item. They are grouped by milestone.
 | `webhdfs_home_directory(authority)` | `GETHOMEDIRECTORY` | Scalar `VARCHAR`. | 4 |
 | `webhdfs_trash_root(url)` | `GETTRASHROOT` | Scalar `VARCHAR`. | 4 |
 | `webhdfs_server_defaults(authority)` | `GETSERVERDEFAULTS` | One row: block size, replication, checksum type, encryption key provider, … | 4 |
-| `webhdfs_namenodes()` | none (local state) | One row per known authority and NameNode: `authority`, `namenode_url`, `state` (`active`, `standby`, `unknown`), `last_error`, `auth_mode`, `supports_batched_listing`. | 4 |
+| `webhdfs_namenodes()` | none (local state) | One row per known endpoint and NameNode: `endpoint`, `namenode`, `state` (`active`, `standby`, `unknown`), `last_error`, `auth_mode`, `batched_listing` (as implemented). | 4 |
 
 Design notes:
 
@@ -526,7 +529,10 @@ alongside a 4xx/5xx status. Map them as follows:
 
 Redact `delegation=` and `user.name=` from every URL that appears in error
 messages and in the HTTP logger. httpfs redacts headers, not query strings, so
-`HTTPParams::logger` alone isn't enough.
+`HTTPParams::logger` alone isn't enough. (As implemented, error messages only
+ever contain the `webhdfs://` URL, never a REST URL with query parameters, so
+there is nothing to redact; the unused `RedactUrl` helper was removed. The
+httpfs HTTP logger still sees full request URLs.)
 
 ## 7. Testing
 
@@ -646,12 +652,9 @@ messages and in the HTTP logger. httpfs redacts headers, not query strings, so
 - **Keeping behaviour in step with duckdb-hdfs.** Code is not shared (see the
   rule at the top), so the two extensions can drift in glob or hidden-file
   behaviour. Our own tests cover the behaviour users rely on: patterns, hidden
-  entries, function columns. Differences are listed in the README.
-- **Partition-pruning API stability.** `GlobFilesExtended` and the
-  `MultiFileList` pushdown hooks are newer core APIs and may change between
-  DuckDB releases. Keep that code in one file (`webhdfs_multi_file_list.cpp`)
-  behind a setting (`webhdfs_partition_pruning`, default true) that falls back
-  to the plain `Glob`.
+  entries, function columns.
+- **Partition-pruning API stability.** Moot: pruning while listing was not
+  possible in v2.0.0 and the code was removed (§10).
 - **httpfs loading when webhdfs loads.** If a user has
   `autoinstall_known_extensions` on but no network, `LOAD webhdfs` tries an
   install and waits for it to time out before succeeding. If that proves
@@ -697,21 +700,43 @@ implementation differs from this plan:
   turns extension autoloading off.
 - **Secret scopes match whole authorities.** Core matches scopes as plain
   string prefixes, so `webhdfs://prod` would also cover `webhdfs://prod2/...`.
-  The `webhdfs` secret is a `KeyValueSecret` subclass whose `MatchScore` needs
-  the scope's scheme and authority to equal the URL's (case-insensitively); the
-  path part stays a prefix. Core reloads persistent key-value secrets as plain
-  `KeyValueSecret`s, so the subclass serializes itself as a custom secret (same
-  fields) to come back through the type's deserializer.
+  The extension therefore picks its secret itself: it scores every `webhdfs`
+  secret with `WebHdfsSecret::ScopeMatchScore` (scheme and authority must equal
+  the URL's, case-insensitively; the path part stays a prefix) and ranks ties
+  the way core does. Persistent secrets are stored as ordinary key-value
+  secrets. An earlier version stored them in core's custom format, which made
+  every secret lookup fail in sessions that hadn't loaded webhdfs (core reads
+  all persistent secrets before any lookup and can't autoload webhdfs); secrets
+  saved that way still load. `which_secret()` uses core's matching.
+- **Per-cluster state is per identity.** Delegation tokens, the
+  SPNEGO-every-request flag, reused redirects and the small-file cache are
+  keyed by auth mode, user, proxy user, Kerberos principal and the `http`
+  secret in effect, so secrets with different identities on one cluster never
+  share them.
+- **Writes.** Buffers are plain byte vectors (not the `Allocator`), outside
+  `memory_limit`. A failed `CREATE`/`APPEND` is never re-sent; the handle is
+  marked failed. A writer destroyed during exception unwinding or after a
+  failure is aborted (the file it created is deleted); one dropped normally
+  without `Close()` (as `EXPORT DATABASE` does) still commits. `ExclusiveCreate` sends
+  `overwrite=false`. `MoveFile` uses `RENAME` with `renameoptions=OVERWRITE`
+  (atomic on the NameNode) and falls back to delete-then-rename only where the
+  server rejects the option (HttpFS).
+- **httpfs loading.** `LOAD webhdfs` only loads an httpfs that is already
+  available; installing is tried at most once per database, on the first
+  request, and only when autoloading is enabled.
 - **yyjson visibility (§9) is not a risk.** A loadable extension links the parts
   of DuckDB core it uses (yyjson included) statically, with their symbols
   hidden. The stripped Linux build loads and runs in a stock DuckDB 2.0.0
   (Python package) next to a separately built httpfs.
 - **Performance work after the first version.**
   - Small files (up to the read-ahead size) are fetched whole and cached per
-    cluster (64 MiB), and reads near the end of a file fetch its tail. This
+    cluster (`webhdfs_small_file_cache_size`, 64 MiB, 0 turns it off), and
+    reads near the end of a file fetch its tail. DuckDB's external file cache
+    treats `webhdfs://` as local, so it only applies with `cache_local_files`. This
     halves DataNode requests for Parquet, which opens each file twice.
-  - A failed directory listing in a walk gets one more try after 2 s, unless
-    the NameNode is plainly unreachable.
+  - A walk lists each directory once with `missing_ok`; transport retries
+    are left to httpfs and the NameNode failover (an earlier extra retry after
+    2 s, decided by matching error text, was removed).
   - Linux release builds strip the loadable extension's symbol table (16 MB
     to 13 MB). The rest is DuckDB core, which every C++ extension links;
     removing features saves little (the SQL functions are 0.2 MB).

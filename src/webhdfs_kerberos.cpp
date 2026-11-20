@@ -50,6 +50,11 @@ bool CreateSpnegoToken(const std::string &, const std::string &, std::string &, 
 	return false;
 }
 
+bool DefaultPrincipal(std::string &, std::string &error) {
+	GssapiAvailable(error);
+	return false;
+}
+
 #else
 
 // The subset of the GSSAPI C ABI (RFC 2744) we call. Apple's GSS.framework packs these structs to 2 bytes.
@@ -85,6 +90,9 @@ typedef OM_uint32 (*gss_release_buffer_fn)(OM_uint32 *, gss_buffer_t);
 typedef OM_uint32 (*gss_release_name_fn)(OM_uint32 *, gss_name_t *);
 typedef OM_uint32 (*gss_delete_sec_context_fn)(OM_uint32 *, gss_ctx_id_t *, gss_buffer_t);
 typedef OM_uint32 (*gss_display_status_fn)(OM_uint32 *, OM_uint32, int, gss_OID, OM_uint32 *, gss_buffer_t);
+typedef void *gss_OID_set;
+typedef OM_uint32 (*gss_inquire_cred_fn)(OM_uint32 *, gss_cred_id_t, gss_name_t *, OM_uint32 *, int *, gss_OID_set *);
+typedef OM_uint32 (*gss_display_name_fn)(OM_uint32 *, gss_name_t, gss_buffer_t, gss_OID *);
 
 static constexpr OM_uint32 GSS_C_MUTUAL_FLAG = 2;
 static constexpr int GSS_C_GSS_CODE = 1;
@@ -99,6 +107,9 @@ struct GssapiLibrary {
 	gss_release_name_fn release_name = nullptr;
 	gss_delete_sec_context_fn delete_sec_context = nullptr;
 	gss_display_status_fn display_status = nullptr;
+	//! optional: only used to name the default principal
+	gss_inquire_cred_fn inquire_cred = nullptr;
+	gss_display_name_fn display_name = nullptr;
 };
 
 static GssapiLibrary &Library() {
@@ -129,6 +140,8 @@ static GssapiLibrary &Library() {
 		library.delete_sec_context =
 		    reinterpret_cast<gss_delete_sec_context_fn>(dlsym(library.handle, "gss_delete_sec_context"));
 		library.display_status = reinterpret_cast<gss_display_status_fn>(dlsym(library.handle, "gss_display_status"));
+		library.inquire_cred = reinterpret_cast<gss_inquire_cred_fn>(dlsym(library.handle, "gss_inquire_cred"));
+		library.display_name = reinterpret_cast<gss_display_name_fn>(dlsym(library.handle, "gss_display_name"));
 		if (!library.import_name || !library.init_sec_context || !library.release_buffer || !library.release_name ||
 		    !library.delete_sec_context || !library.display_status) {
 			library.load_error = "the GSSAPI library is missing required functions";
@@ -212,6 +225,40 @@ bool CreateSpnegoToken(const std::string &service, const std::string &host, std:
 		library.delete_sec_context(&ignored, &context, nullptr);
 	}
 	library.release_name(&ignored, &target);
+	return ok;
+}
+
+bool DefaultPrincipal(std::string &principal, std::string &error) {
+	auto &library = Library();
+	if (!library.handle) {
+		error = library.load_error;
+		return false;
+	}
+	if (!library.inquire_cred || !library.display_name) {
+		error = "the GSSAPI library does not support gss_inquire_cred";
+		return false;
+	}
+	OM_uint32 minor = 0;
+	gss_name_t name = nullptr;
+	// GSS_C_NO_CREDENTIAL (nullptr): the default credentials, i.e. the ticket cache CreateSpnegoToken uses
+	auto major = library.inquire_cred(&minor, nullptr, &name, nullptr, nullptr, nullptr);
+	if ((major & 0xffff0000) != 0 || !name) {
+		error = "gss_inquire_cred: " + DescribeStatus(library, major, minor);
+		return false;
+	}
+	gss_buffer_desc text {0, nullptr};
+	major = library.display_name(&minor, name, &text, nullptr);
+	bool ok = (major & 0xffff0000) == 0;
+	if (ok) {
+		principal.assign(static_cast<const char *>(text.value), text.length);
+	} else {
+		error = "gss_display_name: " + DescribeStatus(library, major, minor);
+	}
+	OM_uint32 ignored = 0;
+	if (text.value) {
+		library.release_buffer(&ignored, &text);
+	}
+	library.release_name(&ignored, &name);
 	return ok;
 }
 

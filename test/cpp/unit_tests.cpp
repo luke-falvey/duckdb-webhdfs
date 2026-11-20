@@ -4,6 +4,7 @@
 #include "webhdfs_glob.hpp"
 #include "webhdfs_hadoop_config.hpp"
 #include "webhdfs_json.hpp"
+#include "webhdfs_listing.hpp"
 #include "webhdfs_url.hpp"
 
 #include <algorithm>
@@ -60,6 +61,30 @@ TEST(url_paths) {
 	CHECK_EQ(JoinPath("/", "x"), "/x");
 	CHECK_EQ(JoinPath("/a", "x"), "/a/x");
 	CHECK_EQ(NormalizePath("//a///b/./"), "/a/b");
+	CHECK_EQ(NormalizePath("/a/../.."), "/");
+	std::string out;
+	CHECK(TryNormalizePath("/a/b/../c/./..", out));
+	CHECK_EQ(out, "/a");
+	CHECK(TryNormalizePath("/a/..", out));
+	CHECK_EQ(out, "/");
+	CHECK(!TryNormalizePath("/..", out));
+	CHECK(!TryNormalizePath("/a/../../b", out));
+	// '...' and '..x' are ordinary names
+	CHECK(TryNormalizePath("/.../..x", out));
+	CHECK_EQ(out, "/.../..x");
+}
+
+TEST(url_parse_dot_segments) {
+	// '..' is resolved while parsing, so allowed_directories and the request see the same path
+	WebHdfsUrl url;
+	std::string error;
+	CHECK(ParseWebHdfsUrl("webhdfs://nn/ok/../secret/x.parquet", url, error));
+	CHECK_EQ(url.path, "/secret/x.parquet");
+	CHECK(ParseWebHdfsUrl("webhdfs://nn/ok/./sub/..", url, error));
+	CHECK_EQ(url.path, "/ok");
+	CHECK(!ParseWebHdfsUrl("webhdfs://nn/../etc", url, error));
+	CHECK(error.find("goes above the root") != std::string::npos);
+	CHECK(!ParseWebHdfsUrl("webhdfs://nn/a/../../etc", url, error));
 }
 
 TEST(url_scheme_roots_and_scopes) {
@@ -88,13 +113,10 @@ TEST(url_encoding) {
 	         "https://knox:8443/gateway/default/webhdfs/v1/?op=LISTSTATUS");
 }
 
-TEST(url_query_rewrite_and_redact) {
+TEST(url_query_rewrite) {
 	auto url = "http://dn:9864/webhdfs/v1/f?op=OPEN&namenoderpcaddress=nn:8020&delegation=SECRET&offset=0";
 	CHECK_EQ(ReplaceQueryParams(url, {{"offset", "100"}, {"length", "5"}}),
 	         "http://dn:9864/webhdfs/v1/f?op=OPEN&namenoderpcaddress=nn:8020&delegation=SECRET&offset=100&length=5");
-	CHECK_EQ(RedactUrl(url), "http://dn:9864/webhdfs/v1/f?op=OPEN&namenoderpcaddress=nn:8020&delegation=REDACTED&"
-	                         "offset=0");
-	CHECK_EQ(RedactUrl("http://nn/x?op=X&user.name=bob&doas=al"), "http://nn/x?op=X&user.name=REDACTED&doas=REDACTED");
 	std::string host, rest;
 	CHECK(SplitUrlHost("http://dn:9864/webhdfs/v1/f?op=OPEN", host, rest));
 	CHECK_EQ(host, "http://dn:9864");
@@ -250,6 +272,13 @@ TEST(glob_roots) {
 	plan = GlobPattern::Compile("/*", false);
 	CHECK_EQ(plan.Root(), "/");
 	CHECK_THROWS(GlobPattern::Compile("relative/*", false));
+	// a '.' or '..' made by brace expansion or escaping would name a directory outside the pattern's
+	CHECK_THROWS(GlobPattern::Compile("/ok/{..,x}/*", false));
+	CHECK_THROWS(GlobPattern::Compile("/ok/{a/..,b}/*", false));
+	CHECK_THROWS(GlobPattern::Compile("/ok/\\.\\./*", false));
+	CHECK_THROWS(GlobPattern::Compile("/ok/{.,x}/\\./*", false));
+	plan = GlobPattern::Compile("/ok/..?/*", false);
+	CHECK_EQ(plan.Root(), "/ok");
 }
 
 TEST(glob_literal_children) {
@@ -357,6 +386,76 @@ TEST(json_listing) {
 	list.clear();
 	CHECK(ParseFileStatusList(R"({"FileStatuses":{"FileStatus":[]}})", list, remaining, error));
 	CHECK(list.empty());
+	// a listed name must be a plain name: it is joined to the listed directory
+	for (auto name : {".", "..", "a/b", "../x"}) {
+		std::string body =
+		    std::string(R"({"FileStatuses":{"FileStatus":[{"pathSuffix":")") + name + R"(","type":"DIRECTORY"}]}})";
+		error.clear();
+		CHECK(!ParseFileStatusList(body, list, remaining, error));
+		CHECK(error.find("invalid pathSuffix") != std::string::npos);
+	}
+	CHECK(!ParseFileStatusList(R"({"FileStatuses":{"FileStatus":[{"pathSuffix":"a\u0000b","type":"FILE"}]}})", list,
+	                           remaining, error));
+	CHECK(IsValidPathSuffix(""));
+	CHECK(IsValidPathSuffix("..."));
+	CHECK(IsValidPathSuffix(".hidden"));
+}
+
+TEST(json_file_status_times) {
+	FileStatus status;
+	std::string error;
+	// HDFS reports accessTime 0 when it doesn't track it; a missing field reads the same
+	CHECK(ParseFileStatus(R"({"FileStatus":{"pathSuffix":"","type":"DIRECTORY","accessTime":0,
+		"modificationTime":5}})",
+	                      status, error));
+	CHECK_EQ(status.access_time, 0);
+	CHECK_EQ(status.modification_time, 5);
+	CHECK(ParseFileStatus(R"({"FileStatus":{"pathSuffix":"","type":"FILE","length":1}})", status, error));
+	CHECK_EQ(status.access_time, 0);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775807}})", status, error));
+	CHECK(error.find("modificationTime") != std::string::npos);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","accessTime":-9223372036854775807}})", status, error));
+}
+
+TEST(json_checked_integers) {
+	FileStatus status;
+	std::string error;
+	// hostile numbers are errors, not wrapped values or undefined behaviour
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":18446744073709551615}})", status, error));
+	CHECK(error.find("length") != std::string::npos);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":1e300}})", status, error));
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":"99999999999999999999"}})", status, error));
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":-1}})", status, error));
+	CHECK(error.find("negative length") != std::string::npos);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","replication":4294967296}})", status, error));
+	CHECK(error.find("replication") != std::string::npos);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","storagePolicy":-2147483649}})", status, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":1.0e3,"replication":"3"}})", status, error));
+	CHECK_EQ(status.length, 1000);
+	CHECK_EQ(status.replication, 3);
+	int64_t remaining = 0;
+	std::vector<FileStatus> list;
+	CHECK(!ParseFileStatusList(R"({"DirectoryListing":{"partialListing":{"FileStatuses":{"FileStatus":[]}},
+		"remainingEntries":1e300}})",
+	                           list, remaining, error));
+	int64_t l = 0;
+	CHECK(!ParseLongResult(R"({"long":18446744073709551615})", l, error));
+	auto doc = JsonDocument::Parse(R"([9223372036854775807, 9223372036854775808, -1e300, "12", "x", 1.5])", error);
+	CHECK(doc != nullptr);
+	auto arr = doc->Root();
+	int64_t v = 0;
+	CHECK(arr.At(0).TryGetInt(v));
+	CHECK_EQ(v, INT64_MAX);
+	CHECK(!arr.At(1).TryGetInt(v));
+	CHECK_EQ(arr.At(1).GetInt(-7), -7);
+	CHECK(!arr.At(2).TryGetInt(v));
+	CHECK(arr.At(3).TryGetInt(v));
+	CHECK_EQ(v, 12);
+	CHECK(arr.At(4).TryGetInt(v, 4));
+	CHECK_EQ(v, 4);
+	CHECK(arr.At(5).TryGetInt(v));
+	CHECK_EQ(v, 1);
+	CHECK_EQ(arr.At(1).GetDouble(), 9223372036854775808.0);
 }
 
 TEST(json_misc) {
@@ -390,6 +489,63 @@ TEST(json_misc) {
 	CHECK(arr.At(3).IsNull());
 	CHECK(arr.At(9).IsMissing());
 	CHECK_EQ(doc->Root()["a"].ToJson(), R"({"b":[1,"x",true,null]})");
+}
+
+//===--------------------------------------------------------------------===//
+// LISTSTATUS_BATCH paging
+//===--------------------------------------------------------------------===//
+
+//! Feed canned pages through the same checks as WebHdfsClient::ListStatus; returns false at the first page that
+//! does not advance
+static bool PageThrough(const std::vector<std::string> &pages, std::string &error) {
+	std::string start_after;
+	bool first = true;
+	for (auto &body : pages) {
+		std::vector<FileStatus> list;
+		int64_t remaining = 0;
+		CHECK(ParseFileStatusList(body, list, remaining, error));
+		auto last = list.empty() ? std::string() : list.back().path_suffix;
+		if (!ListingPageAdvances(first, start_after, list.size(), last, remaining, error)) {
+			return false;
+		}
+		first = false;
+		if (!list.empty()) {
+			start_after = last;
+		}
+		if (remaining <= 0 || list.empty() || start_after.empty()) {
+			return true;
+		}
+	}
+	return true;
+}
+
+static std::string BatchPage(const std::vector<std::string> &names, int64_t remaining) {
+	std::string body = R"({"DirectoryListing":{"partialListing":{"FileStatuses":{"FileStatus":[)";
+	for (size_t i = 0; i < names.size(); i++) {
+		body += (i ? "," : "") + std::string(R"({"pathSuffix":")") + names[i] + R"(","type":"FILE","length":1})";
+	}
+	return body + R"(]}},"remainingEntries":)" + std::to_string(remaining) + "}}";
+}
+
+TEST(liststatus_batch_paging) {
+	std::string error;
+	// a normal two-page listing
+	CHECK(PageThrough({BatchPage({"a", "b"}, 2), BatchPage({"c", "d"}, 0)}, error));
+	// an empty directory, and a listed file (named "")
+	CHECK(PageThrough({BatchPage({}, 0)}, error));
+	CHECK(PageThrough({BatchPage({""}, 0)}, error));
+	// the second page repeats the first page's last name: would request the same page forever
+	CHECK(!PageThrough({BatchPage({"a", "b"}, 2), BatchPage({"b"}, 1), BatchPage({"b"}, 1)}, error));
+	CHECK(error.find("repeats the previous page, which ended at \"b\"") != std::string::npos);
+	// an empty page while entries remain
+	CHECK(!PageThrough({BatchPage({"a"}, 3), BatchPage({}, 3)}, error));
+	CHECK(error.find("empty page with 3 entries remaining") != std::string::npos);
+	// a nameless last entry while entries remain
+	CHECK(!PageThrough({BatchPage({""}, 5)}, error));
+	// no ordering is assumed: the NameNode compares names as signed bytes, so non-ASCII UTF-8 names come before
+	// ASCII ones ("\xc3\xbc" < "a"), and either order across a page boundary is valid
+	CHECK(PageThrough({BatchPage({"y", "z"}, 1), BatchPage({"\xc3\xbc"}, 0)}, error));
+	CHECK(PageThrough({BatchPage({"\xc3\xbc"}, 1), BatchPage({"a"}, 0)}, error));
 }
 
 int main() {

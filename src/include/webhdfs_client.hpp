@@ -55,12 +55,15 @@ public:
 	//! LISTSTATUS_BATCH support: -1 unknown, 0 no, 1 yes
 	std::atomic<int> batch_listing {-1};
 
-	//! Delegation token fetched with Kerberos (empty if none / expired)
-	string GetKerberosToken();
-	void SetKerberosToken(const string &token);
-	void ClearKerberosToken();
+	//! Authentication state is kept per identity (WebHdfsClient::Identity: auth mode, user, proxy user, Kerberos
+	//! principal, tokens), never per authority alone, so one identity's token never serves another.
+	//! Delegation token fetched with Kerberos for `identity` (empty if none / expired)
+	string GetKerberosToken(const string &identity);
+	void SetKerberosToken(const string &identity, const string &token);
+	void ClearKerberosToken(const string &identity);
 	//! The NameNode does not issue delegation tokens over HTTP (a gateway): SPNEGO on every request instead
-	std::atomic<bool> spnego_every_request {false};
+	bool SpnegoEveryRequest(const string &identity);
+	void SetSpnegoEveryRequest(const string &identity);
 
 	//! DataNode redirects of earlier reads, for reads that skip the NameNode. Keys include the identity, the path
 	//! and the file version, so a redirect is only reused by the same user for the same file contents.
@@ -72,7 +75,8 @@ public:
 	//! (DuckDB's readers open a file at bind time and again to scan it) costs no request
 	shared_ptr<const string> GetSmallFile(const string &key);
 	void PutSmallFile(const string &key, shared_ptr<const string> contents);
-	static constexpr idx_t SMALL_FILE_CACHE_BYTES = idx_t(64) << 20;
+	//! Cache budget in bytes (webhdfs_small_file_cache_size); 0 disables the cache and drops what it holds
+	void SetSmallFileCacheSize(idx_t bytes);
 
 private:
 	mutex lock;
@@ -83,14 +87,34 @@ private:
 	string auth_mode;
 	string namenode_source;
 	string secret_name;
-	string kerberos_token;
-	std::chrono::steady_clock::time_point kerberos_token_expiry;
+	struct IdentityState {
+		string kerberos_token;
+		std::chrono::steady_clock::time_point kerberos_token_expiry;
+		bool spnego_every_request = false;
+	};
+	unordered_map<string, IdentityState> identities;
 	static constexpr idx_t MAX_REDIRECTS = 4096;
 	unordered_map<string, string> redirects;
 	unordered_map<string, shared_ptr<const string>> small_files;
 	//! insertion order, for evicting the oldest entries first
 	std::deque<string> small_file_order;
 	idx_t small_file_bytes = 0;
+	idx_t small_file_limit = WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE;
+	//! evict the oldest small files until `bytes` more fit (requires `lock`)
+	void EvictSmallFiles(idx_t bytes);
+};
+
+//! Outcome of RENAME with renameoptions=OVERWRITE (WebHdfsClient::RenameOverwrite)
+enum class WebHdfsRenameOutcome : uint8_t {
+	//! The NameNode ran rename2: the source replaced the target (if any) in one atomic step
+	RENAMED,
+	//! The server ignored the option (HttpFS does) and ran the old rename, which answered true / false
+	LEGACY_TRUE,
+	LEGACY_FALSE,
+	//! The server refused the option
+	OPTION_REJECTED,
+	//! FileNotFoundException: the source, or the target's parent directory, does not exist
+	NOT_FOUND
 };
 
 enum class WebHdfsErrorKind : uint8_t {
@@ -127,6 +151,11 @@ public:
 	}
 	//! scheme://authority<path>
 	string UrlFor(const string &path) const;
+	//! Everything that decides who the requests act as: auth mode, user name, proxy user, delegation token,
+	//! Kerberos principal and service, and the `http` secret that applies. Keys per-identity endpoint state.
+	const string &Identity() const {
+		return identity;
+	}
 	//! Key for per-file caches: identity (so cached data never crosses users), path and file version
 	string CacheKey(const string &path, const string &version) const;
 
@@ -144,6 +173,9 @@ public:
 	bool Mkdirs(const string &path, const string &permission = "");
 	bool Delete(const string &path, bool recursive);
 	bool Rename(const string &source, const string &destination);
+	//! RENAME with renameoptions=OVERWRITE (NameNode rename2): replaces a file target atomically, refuses a
+	//! directory target. Other failures throw.
+	WebHdfsRenameOutcome RenameOverwrite(const string &source, const string &destination);
 	//! Any NameNode GET operation; returns the JSON body
 	string GetJson(const string &op, const string &path, const vector<std::pair<string, string>> &params = {});
 	//! A GET operation the NameNode answers by redirecting to a DataNode (GETFILECHECKSUM)
@@ -182,6 +214,7 @@ private:
 	WebHdfsSettings settings;
 	WebHdfsEndpoint &endpoint;
 	unique_ptr<HTTPParams> params;
+	string identity;
 };
 
 //! Epoch milliseconds to a DuckDB timestamp

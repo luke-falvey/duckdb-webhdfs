@@ -61,6 +61,35 @@ SELECT type, children_num FROM webhdfs_stat('webhdfs://localhost:9870/test/data/
 ----
 directory	2
 
+# HDFS doesn't track access times of directories (accessTime 0): unknown, not 1970
+query II
+SELECT last_accessed IS NULL, last_modified > TIMESTAMPTZ '2020-01-01' FROM webhdfs_stat('webhdfs://localhost:9870/test/data/sub');
+----
+true	true
+
+# '.' and '..' are resolved in the URL before any request
+query T
+SELECT path FROM webhdfs_stat('webhdfs://localhost:9870/test/data/sub/./deep/../../people.csv');
+----
+webhdfs://localhost:9870/test/data/people.csv
+
+statement error
+SELECT * FROM webhdfs_stat('webhdfs://localhost:9870/test/../../etc');
+----
+goes above the root
+
+# a '..' made by brace expansion is refused, not sent to the NameNode
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/{..,sub}/*');
+----
+is not allowed as a glob pattern component
+
+# calls that differ only in named parameters are different calls
+query II
+SELECT (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data')), (SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data', include_hidden := true));
+----
+5	8
+
 query I
 SELECT name = '' FROM webhdfs_stat('webhdfs://localhost:9870/');
 ----

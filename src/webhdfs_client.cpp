@@ -1,9 +1,13 @@
 #include "webhdfs_client.hpp"
 
+#include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "webhdfs_kerberos.hpp"
+#include "webhdfs_listing.hpp"
 
 #include <cstring>
 #include <thread>
@@ -87,24 +91,44 @@ WebHdfsEndpoint::Snapshot WebHdfsEndpoint::GetSnapshot() {
 	return snapshot;
 }
 
-string WebHdfsEndpoint::GetKerberosToken() {
+string WebHdfsEndpoint::GetKerberosToken(const string &identity) {
 	lock_guard<mutex> guard(lock);
-	if (!kerberos_token.empty() && std::chrono::steady_clock::now() >= kerberos_token_expiry) {
-		kerberos_token.clear();
+	auto entry = identities.find(identity);
+	if (entry == identities.end()) {
+		return string();
 	}
-	return kerberos_token;
+	auto &state = entry->second;
+	if (!state.kerberos_token.empty() && std::chrono::steady_clock::now() >= state.kerberos_token_expiry) {
+		state.kerberos_token.clear();
+	}
+	return state.kerberos_token;
 }
 
-void WebHdfsEndpoint::SetKerberosToken(const string &token) {
+void WebHdfsEndpoint::SetKerberosToken(const string &identity, const string &token) {
 	lock_guard<mutex> guard(lock);
-	kerberos_token = token;
+	auto &state = identities[identity];
+	state.kerberos_token = token;
 	// Hadoop's default renew interval is 24 hours; fetch a fresh token well before that
-	kerberos_token_expiry = std::chrono::steady_clock::now() + std::chrono::hours(12);
+	state.kerberos_token_expiry = std::chrono::steady_clock::now() + std::chrono::hours(12);
 }
 
-void WebHdfsEndpoint::ClearKerberosToken() {
+void WebHdfsEndpoint::ClearKerberosToken(const string &identity) {
 	lock_guard<mutex> guard(lock);
-	kerberos_token.clear();
+	auto entry = identities.find(identity);
+	if (entry != identities.end()) {
+		entry->second.kerberos_token.clear();
+	}
+}
+
+bool WebHdfsEndpoint::SpnegoEveryRequest(const string &identity) {
+	lock_guard<mutex> guard(lock);
+	auto entry = identities.find(identity);
+	return entry != identities.end() && entry->second.spnego_every_request;
+}
+
+void WebHdfsEndpoint::SetSpnegoEveryRequest(const string &identity) {
+	lock_guard<mutex> guard(lock);
+	identities[identity].spnego_every_request = true;
 }
 
 string WebHdfsEndpoint::GetRedirect(const string &key) {
@@ -123,16 +147,15 @@ void WebHdfsEndpoint::PutRedirect(const string &key, const string &url) {
 
 shared_ptr<const string> WebHdfsEndpoint::GetSmallFile(const string &key) {
 	lock_guard<mutex> guard(lock);
+	if (small_file_limit == 0) {
+		return nullptr;
+	}
 	auto entry = small_files.find(key);
 	return entry == small_files.end() ? nullptr : entry->second;
 }
 
-void WebHdfsEndpoint::PutSmallFile(const string &key, shared_ptr<const string> contents) {
-	lock_guard<mutex> guard(lock);
-	if (small_files.count(key) || contents->size() > SMALL_FILE_CACHE_BYTES) {
-		return;
-	}
-	while (small_file_bytes + contents->size() > SMALL_FILE_CACHE_BYTES && !small_file_order.empty()) {
+void WebHdfsEndpoint::EvictSmallFiles(idx_t bytes) {
+	while (small_file_bytes + bytes > small_file_limit && !small_file_order.empty()) {
 		auto oldest = small_files.find(small_file_order.front());
 		if (oldest != small_files.end()) {
 			small_file_bytes -= oldest->second->size();
@@ -140,9 +163,23 @@ void WebHdfsEndpoint::PutSmallFile(const string &key, shared_ptr<const string> c
 		}
 		small_file_order.pop_front();
 	}
+}
+
+void WebHdfsEndpoint::PutSmallFile(const string &key, shared_ptr<const string> contents) {
+	lock_guard<mutex> guard(lock);
+	if (small_files.count(key) || contents->size() > small_file_limit) {
+		return;
+	}
+	EvictSmallFiles(contents->size());
 	small_file_bytes += contents->size();
 	small_file_order.push_back(key);
 	small_files.emplace(key, std::move(contents));
+}
+
+void WebHdfsEndpoint::SetSmallFileCacheSize(idx_t bytes) {
+	lock_guard<mutex> guard(lock);
+	small_file_limit = bytes;
+	EvictSmallFiles(0);
 }
 
 void WebHdfsEndpoint::DropRedirect(const string &key, const string &url) {
@@ -207,12 +244,74 @@ WebHdfsErrorKind ClassifyWebHdfsError(const WebHdfsHttpResult &result, RemoteExc
 // Client
 //===--------------------------------------------------------------------===//
 
+//! Append `value` length-prefixed, so that no choice of field values makes two identities equal
+static void AppendIdentityField(string &key, const string &value) {
+	key += std::to_string(value.size());
+	key += ':';
+	key += value;
+}
+
+//! The `http` secret httpfs applies to requests for `url` (e.g. a bearer token for an AUTH 'none' gateway)
+static string HttpSecretIdentity(DatabaseInstance &db, optional_ptr<FileOpener> opener, const string &url) {
+	auto context = FileOpener::TryGetClientContext(opener);
+	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+	                           : CatalogTransaction::GetSystemTransaction(db);
+	auto match = SecretManager::Get(db).LookupSecret(transaction, url, "http");
+	if (!match.HasMatch()) {
+		return string();
+	}
+	auto &secret = match.GetSecret();
+	string key;
+	AppendIdentityField(key, secret.GetName().GetIdentifierName());
+	auto kv_secret = dynamic_cast<const KeyValueSecret *>(&secret);
+	if (kv_secret) {
+		for (auto &entry : kv_secret->secret_map) {
+			AppendIdentityField(key, entry.first.GetIdentifierName());
+			AppendIdentityField(key, entry.second.IsNull() ? string() : entry.second.ToString());
+		}
+	}
+	return key;
+}
+
+static string BuildIdentity(DatabaseInstance &db, optional_ptr<FileOpener> opener, const webhdfs::WebHdfsUrl &url,
+                            const WebHdfsConfig &config) {
+	string key;
+	AppendIdentityField(key, AuthModeToString(config.auth));
+	AppendIdentityField(key, config.proxy_user);
+	switch (config.auth) {
+	case WebHdfsAuthMode::SIMPLE:
+		AppendIdentityField(key, config.user_name);
+		break;
+	case WebHdfsAuthMode::TOKEN:
+		AppendIdentityField(key, config.delegation_token);
+		break;
+	case WebHdfsAuthMode::KERBEROS: {
+		// the ticket cache's principal (kinit as another user, or another KRB5CCNAME, is another identity)
+		string principal;
+		string error;
+		if (!webhdfs::DefaultPrincipal(principal, error)) {
+			// no ticket yet: requests fail with the SPNEGO error; keep such an identity apart from any principal
+			principal = "\n(unknown)";
+		}
+		AppendIdentityField(key, principal);
+		AppendIdentityField(key, config.kerberos_service);
+		break;
+	}
+	case WebHdfsAuthMode::NONE:
+		break;
+	}
+	AppendIdentityField(key, HttpSecretIdentity(db, opener, url.ToString()));
+	return key;
+}
+
 WebHdfsClient::WebHdfsClient(DatabaseInstance &db_p, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url_p,
                              WebHdfsConfig config_p, WebHdfsSettings settings_p, WebHdfsEndpoint &endpoint_p)
     : db(db_p), url(std::move(url_p)), config(std::move(config_p)), settings(std::move(settings_p)),
       endpoint(endpoint_p) {
 	params = WebHdfsHttp::CreateParams(db, opener, url.ToString());
+	identity = BuildIdentity(db, opener, url, config);
 	endpoint.RecordConfig(config);
+	endpoint.SetSmallFileCacheSize(settings.small_file_cache_size);
 }
 
 string WebHdfsClient::UrlFor(const string &path) const {
@@ -326,7 +425,7 @@ string WebHdfsClient::FetchKerberosDelegationToken() {
 		}
 		if (kind == WebHdfsErrorKind::UNSUPPORTED || result.status == 400 || result.status == 404) {
 			// a gateway that authenticates every request but doesn't hand out tokens
-			endpoint.spnego_every_request = true;
+			endpoint.SetSpnegoEveryRequest(identity);
 			endpoint.MarkActive(nn);
 			return "";
 		}
@@ -337,22 +436,22 @@ string WebHdfsClient::FetchKerberosDelegationToken() {
 		string error;
 		if (!webhdfs::ParseToken(result.body, token, error)) {
 			// e.g. a NameNode with security disabled answers {"Token":null}: authenticate every request instead
-			endpoint.spnego_every_request = true;
+			endpoint.SetSpnegoEveryRequest(identity);
 			endpoint.MarkActive(nn);
 			return "";
 		}
 		endpoint.MarkActive(nn);
-		endpoint.SetKerberosToken(token);
+		endpoint.SetKerberosToken(identity, token);
 		return token;
 	}
 	throw IOException("WebHDFS: could not reach any NameNode of \"%s\" to authenticate:%s", url.Prefix(), failures);
 }
 
 string WebHdfsClient::KerberosDelegationToken() {
-	if (endpoint.spnego_every_request) {
+	if (endpoint.SpnegoEveryRequest(identity)) {
 		return "";
 	}
-	auto token = endpoint.GetKerberosToken();
+	auto token = endpoint.GetKerberosToken(identity);
 	if (!token.empty()) {
 		return token;
 	}
@@ -406,7 +505,7 @@ WebHdfsHttpResult WebHdfsClient::NameNodeCall(RequestType type, const string &op
 			if (kind == WebHdfsErrorKind::INVALID_TOKEN && config.auth == WebHdfsAuthMode::KERBEROS &&
 			    !token_refreshed) {
 				token_refreshed = true;
-				endpoint.ClearKerberosToken();
+				endpoint.ClearKerberosToken(identity);
 				continue;
 			}
 			endpoint.MarkActive(nn);
@@ -419,7 +518,7 @@ WebHdfsHttpResult WebHdfsClient::NameNodeCall(RequestType type, const string &op
 WebHdfsHttpResult WebHdfsClient::DataNodeCall(RequestType type, const string &request_url, const_data_ptr_t data,
                                               idx_t len, const WebHdfsBodySink &sink) {
 	vector<std::pair<string, string>> headers;
-	if (config.auth == WebHdfsAuthMode::KERBEROS && endpoint.spnego_every_request &&
+	if (config.auth == WebHdfsAuthMode::KERBEROS && endpoint.SpnegoEveryRequest(identity) &&
 	    request_url.find("delegation=") == string::npos) {
 		headers = SpnegoHeaders(request_url);
 	}
@@ -481,12 +580,16 @@ bool WebHdfsClient::ListStatus(const string &path, const std::function<void(vect
 			if (!webhdfs::ParseFileStatusList(result.body, entries, remaining, error)) {
 				throw IOException("WebHDFS LISTSTATUS_BATCH on \"%s\": %s", UrlFor(path), error);
 			}
+			auto page_last = entries.empty() ? string() : entries.back().path_suffix;
+			if (!webhdfs::ListingPageAdvances(first, start_after, entries.size(), page_last, remaining, error)) {
+				throw IOException("WebHDFS LISTSTATUS_BATCH on \"%s\" did not advance: %s", UrlFor(path), error);
+			}
 			first = false;
 			if (!entries.empty()) {
-				start_after = entries.back().path_suffix;
+				start_after = page_last;
 			}
 			callback(entries);
-			if (remaining <= 0 || start_after.empty()) {
+			if (remaining <= 0 || entries.empty() || start_after.empty()) {
 				return true;
 			}
 		}
@@ -567,6 +670,33 @@ bool WebHdfsClient::Rename(const string &source, const string &destination) {
 	                    NameNodeCall(RequestType::PUT_REQUEST, "RENAME", source, {{"destination", destination}}));
 }
 
+WebHdfsRenameOutcome WebHdfsClient::RenameOverwrite(const string &source, const string &destination) {
+	auto result = NameNodeCall(RequestType::PUT_REQUEST, "RENAME", source,
+	                           {{"destination", destination}, {"renameoptions", "OVERWRITE"}});
+	if (!result.Ok()) {
+		RemoteException exception;
+		auto kind = ClassifyWebHdfsError(result, exception);
+		if (kind == WebHdfsErrorKind::NOT_FOUND) {
+			return WebHdfsRenameOutcome::NOT_FOUND;
+		}
+		if (kind == WebHdfsErrorKind::UNSUPPORTED ||
+		    (result.status == 400 && Contains(StringUtil::Lower(exception.message), "renameoptions"))) {
+			return WebHdfsRenameOutcome::OPTION_REJECTED;
+		}
+		ThrowError("RENAME", source, result);
+	}
+	// rename2 answers 200 with an empty body; a server that ignored the option answers {"boolean": ...}
+	if (result.body.find_first_not_of(" \t\r\n") == string::npos) {
+		return WebHdfsRenameOutcome::RENAMED;
+	}
+	bool value = false;
+	string error;
+	if (!webhdfs::ParseBooleanResult(result.body, value, error)) {
+		throw IOException("WebHDFS RENAME on \"%s\": %s", UrlFor(source), error);
+	}
+	return value ? WebHdfsRenameOutcome::LEGACY_TRUE : WebHdfsRenameOutcome::LEGACY_FALSE;
+}
+
 string WebHdfsClient::GetJson(const string &op, const string &path, const vector<std::pair<string, string>> &query) {
 	auto result = NameNodeCall(RequestType::GET_REQUEST, op, path, query);
 	if (!result.Ok()) {
@@ -595,13 +725,10 @@ string WebHdfsClient::GetJsonViaDataNode(const string &op, const string &path,
 }
 
 string WebHdfsClient::CacheKey(const string &path, const string &version) const {
-	string key = AuthModeToString(config.auth) + "\n" + config.proxy_user + "\n";
-	if (config.auth == WebHdfsAuthMode::SIMPLE) {
-		key += config.user_name;
-	} else if (config.auth == WebHdfsAuthMode::TOKEN) {
-		key += config.delegation_token;
-	}
-	return key + "\n" + path + "\n" + version;
+	string key = identity;
+	AppendIdentityField(key, path);
+	AppendIdentityField(key, version);
+	return key;
 }
 
 void WebHdfsClient::ReadRange(const string &path, idx_t offset, idx_t length, data_ptr_t buffer,

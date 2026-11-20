@@ -3,7 +3,6 @@
 #include "duckdb/common/exception.hpp"
 
 #include <algorithm>
-#include <chrono>
 
 namespace duckdb {
 
@@ -88,40 +87,25 @@ void WebHdfsWalk::Fetch(const string &path, Listing &listing) {
 	std::exception_ptr error;
 	bool not_found = false;
 	bool permission_denied = false;
-	// A big walk makes thousands of requests, and one failure aborts it. httpfs already retries each request; a
-	// listing whose retries all fail (e.g. a NameNode shedding connections under load) gets one more, later try.
-	for (idx_t attempt = 0; attempt < 2; attempt++) {
+	// Transport failures are already retried by httpfs and the client; any error that gets here is final.
+	try {
+		// a directory that vanished (or a named directory that doesn't exist) is just empty
+		not_found = !client->ListStatus(
+		    path,
+		    [&](vector<FileStatus> &page) {
+			    for (auto &entry : page) {
+				    entries.push_back(std::move(entry));
+			    }
+		    },
+		    /*missing_ok=*/true);
+	} catch (PermissionException &e) {
+		permission_denied = true;
+		error = std::current_exception();
+	} catch (...) {
+		error = std::current_exception();
+	}
+	if (not_found || error) {
 		entries.clear();
-		error = nullptr;
-		try {
-			client->ListStatus(path, [&](vector<FileStatus> &page) {
-				for (auto &entry : page) {
-					entries.push_back(std::move(entry));
-				}
-			});
-		} catch (IOException &e) {
-			// a directory that vanished (or a named directory that doesn't exist) is just empty
-			if (StringUtil::Contains(e.what(), "no such file or directory")) {
-				not_found = true;
-			} else {
-				error = std::current_exception();
-				string message = e.what();
-				// nothing listening, or a name that doesn't resolve: waiting won't help
-				bool unreachable = StringUtil::Contains(message, "Couldn't connect") ||
-				                   StringUtil::Contains(message, "Could not resolve") ||
-				                   StringUtil::Contains(message, "Could not establish");
-				if (attempt == 0 && !unreachable) {
-					std::this_thread::sleep_for(std::chrono::seconds(2));
-					continue;
-				}
-			}
-		} catch (PermissionException &e) {
-			permission_denied = true;
-			error = std::current_exception();
-		} catch (...) {
-			error = std::current_exception();
-		}
-		break;
 	}
 	lock_guard<mutex> guard(lock);
 	listing.entries = std::move(entries);
@@ -214,6 +198,11 @@ void WebHdfsWalk::Expand(Item &item) {
 		if (status.path_suffix.empty()) {
 			// LISTSTATUS on a file returns the file itself
 			continue;
+		}
+		if (!webhdfs::IsValidPathSuffix(status.path_suffix)) {
+			// FileStatus parsing rejects these already; never let a server name step outside the walked directory
+			throw IOException("WebHDFS listing of \"%s\" returned an invalid name \"%s\"",
+			                  client->UrlFor(item.entry.path), status.path_suffix);
 		}
 		auto child_path = webhdfs::JoinPath(item.entry.path, status.path_suffix);
 		webhdfs::GlobMatch match;

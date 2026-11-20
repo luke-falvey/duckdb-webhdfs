@@ -1,7 +1,9 @@
 #include "webhdfs_secret.hpp"
 
+#include "webhdfs_hadoop_config.hpp"
+#include "webhdfs_url.hpp"
+
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
 namespace duckdb {
@@ -43,39 +45,50 @@ int64_t WebHdfsSecret::ScopeMatchScore(const string &path, const string &scope) 
 	return score;
 }
 
-int64_t WebHdfsSecret::MatchScore(const string &path) const {
-	if (prefix_paths.empty()) {
+int64_t WebHdfsSecret::SecretMatchScore(const BaseSecret &secret, const string &path) {
+	auto &scopes = secret.GetScope();
+	if (scopes.empty()) {
 		return 0;
 	}
 	auto best = NumericLimits<int64_t>::Minimum();
-	for (auto &scope : prefix_paths) {
+	for (auto &scope : scopes) {
 		best = MaxValue(best, ScopeMatchScore(path, scope));
 	}
 	return best;
 }
 
-void WebHdfsSecret::Serialize(Serializer &serializer) const {
-	SerializeBaseSecret(serializer);
-	serializer.WriteProperty(104, "serialization_type", SecretSerializationType::CUSTOM);
-	// the fields KeyValueSecret::Deserialize reads
-	vector<Value> map_values;
-	for (auto &entry : secret_map) {
-		child_list_t<Value> map_struct;
-		map_struct.emplace_back("key", Value(entry.first));
-		map_struct.emplace_back("value", entry.second);
-		map_values.push_back(Value::STRUCT(std::move(map_struct)));
-	}
-	auto map_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::ANY);
-	serializer.WriteProperty(201, "secret_map", Value::MAP(ListType::GetChildType(map_type), map_values));
-	vector<Value> redact_values;
-	for (auto &key : redact_keys) {
-		redact_values.emplace_back(key);
-	}
-	serializer.WriteProperty(202, "redact_keys", Value::LIST(LogicalType::VARCHAR, redact_values));
+int64_t WebHdfsSecret::MatchScore(const string &path) const {
+	return SecretMatchScore(*this, path);
 }
 
 static const char *const STRING_OPTIONS[] = {"user_name",    "proxy_user",       "delegation_token", "auth",
                                              "gateway_path", "kerberos_service", "permission"};
+
+//! NAMENODES entries are host:port (an entry may hold a comma-separated list): no scheme, no path, a numeric port
+static void ValidateNameNodes(const Value &namenodes) {
+	for (auto &entry : ListValue::GetChildren(namenodes)) {
+		if (entry.IsNull()) {
+			continue;
+		}
+		auto text = entry.ToString();
+		auto addresses = webhdfs::SplitCommaList(text);
+		if (addresses.empty()) {
+			throw InvalidInputException("webhdfs secret: NAMENODES entry '%s' is empty; expected host:port", text);
+		}
+		for (auto &address : addresses) {
+			string host;
+			int port = 0;
+			bool valid = address.find_first_of("/?#@ \t") == string::npos &&
+			             webhdfs::SplitHostPort(address, host, port) && port != 0 &&
+			             (host[0] == '[' || host.find(':') == string::npos);
+			if (!valid) {
+				throw InvalidInputException(
+				    "webhdfs secret: NAMENODES entry '%s' must be host:port with a numeric port (no scheme or path)",
+				    address);
+			}
+		}
+	}
+}
 
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	auto scope = input.scope;
@@ -107,7 +120,9 @@ static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &conte
 			}
 			secret->secret_map[Identifier(name)] = Value(text);
 		} else if (name == "namenodes") {
-			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::LIST(LogicalType::VARCHAR));
+			auto namenodes = value.DefaultCastAs(LogicalType::LIST(LogicalType::VARCHAR));
+			ValidateNameNodes(namenodes);
+			secret->secret_map[Identifier(name)] = std::move(namenodes);
 		} else if (name == "datanode_address_map") {
 			secret->secret_map[Identifier(name)] =
 			    value.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
@@ -116,8 +131,23 @@ static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &conte
 		} else if (name == "replication" || name == "block_size") {
 			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::BIGINT);
 		} else {
-			throw InvalidInputException("Unknown option for a webhdfs secret: '%s'", name);
+			// the binder rejects options that are not in named_parameters before this function runs
+			throw InternalException("webhdfs secret: option '%s' is registered but not handled", name);
 		}
+	}
+
+	Value auth_value;
+	Value token_value;
+	string auth = secret->TryGetValue(Identifier("auth"), auth_value) ? auth_value.ToString() : "";
+	bool has_token =
+	    secret->TryGetValue(Identifier("delegation_token"), token_value) && !token_value.ToString().empty();
+	if (auth == "token" && !has_token) {
+		throw InvalidInputException("webhdfs secret: AUTH 'token' needs a DELEGATION_TOKEN");
+	}
+	if (has_token && !auth.empty() && auth != "token") {
+		throw InvalidInputException(
+		    "webhdfs secret: DELEGATION_TOKEN can only be used with AUTH 'token' (or without AUTH), not AUTH '%s'",
+		    auth);
 	}
 	return std::move(secret);
 }
@@ -125,6 +155,8 @@ static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &conte
 void RegisterWebHdfsSecretType(ExtensionLoader &loader) {
 	SecretType secret_type;
 	secret_type.name = Identifier("webhdfs");
+	// new secrets are written as KEY_VALUE_SECRET (core reloads them as KeyValueSecrets); this reads the ones that
+	// earlier versions wrote with a custom serialization type
 	secret_type.deserializer = KeyValueSecret::Deserialize<WebHdfsSecret>;
 	secret_type.default_provider = "config";
 	secret_type.extension = "webhdfs";

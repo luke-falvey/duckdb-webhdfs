@@ -524,9 +524,9 @@ WebHdfsHttpResult WebHdfsClient::DataNodeCall(RequestType type, const string &re
 	    request_url.find("delegation=") == string::npos) {
 		headers = SpnegoHeaders(request_url);
 	}
-	// a directory client skips HTTPUtil's check (see WebHdfsHttp::CreateParams): only valid while every leg is checked
-	// against the URL CreateClient checked
-	D_ASSERT(!params->skip_external_access_check || params->access_path == url.ToString());
+	// only file clients reach a DataNode: a directory client skips HTTPUtil's check (see WebHdfsHttp::CreateParams),
+	// and a DataNode leg must never inherit that
+	D_ASSERT(!params->skip_external_access_check);
 	endpoint.RecordDataNodeRequest();
 	return Send(type, request_url, headers, data, len, sink);
 }

@@ -49,6 +49,18 @@ bool HasGlobCharacters(const std::string &text) {
 	return HasUnescaped(text, "*?[{");
 }
 
+std::string EscapeGlob(const std::string &path) {
+	std::string result;
+	result.reserve(path.size());
+	for (auto c : path) {
+		if (c == '\\' || c == '*' || c == '?' || c == '[' || c == '{') {
+			result += '\\';
+		}
+		result += c;
+	}
+	return result;
+}
+
 std::string UnescapeGlob(const std::string &text) {
 	std::string result;
 	result.reserve(text.size());

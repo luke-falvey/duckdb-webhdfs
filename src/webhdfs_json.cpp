@@ -288,8 +288,8 @@ static bool ParseFileStatusFields(JsonValue obj, FileStatus &status, std::string
 	    !ReadInt32(obj, "storagePolicy", -1, status.storage_policy, error)) {
 		return false;
 	}
-	if (status.file_id < 0) {
-		// no inode id: one value for "none", so every tag built from it agrees
+	if (status.file_id <= 0) {
+		// no inode id (0 is HDFS's "unknown" id): one value for "none", so every tag built from it agrees
 		status.file_id = -1;
 	}
 	auto ec = obj["ecPolicy"];

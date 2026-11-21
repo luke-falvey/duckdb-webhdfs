@@ -260,6 +260,24 @@ TEST(glob_hidden_rules) {
 	CHECK_EQ(r.size(), 1u);
 }
 
+TEST(glob_escape_literal) {
+	// an escaped path compiles to itself: a literal whose root is exactly that path
+	for (std::string path : {"/t/x\\y", "/t/a*b", "/t/\\.\\./c", "/t/{a,b}/[x]?", "/plain/path"}) {
+		auto pattern = GlobPattern::Compile(EscapeGlob(path), false);
+		CHECK(pattern.IsLiteral());
+		CHECK_EQ(pattern.Root(), path);
+		CHECK_EQ(UnescapeGlob(EscapeGlob(path)), path);
+	}
+	// an escape that makes '..' is still refused
+	bool threw = false;
+	try {
+		GlobPattern::Compile("/a/\\.\\./b", false);
+	} catch (GlobError &) {
+		threw = true;
+	}
+	CHECK(threw);
+}
+
 TEST(glob_roots) {
 	auto plan = GlobPattern::Compile("/data/sub/*.parquet", false);
 	CHECK_EQ(plan.Root(), "/data/sub");
@@ -441,7 +459,10 @@ TEST(version_tag) {
 	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5}})", a, error));
 	CHECK(ListingEtag(a, tag_a));
 	CHECK_EQ(tag_a, std::string("-1:5:3"));
-	// a negative fileId is no id either
+	// a negative or zero fileId is no id either
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":0}})", a, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
 	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":-5}})", a, error));
 	CHECK(ListingEtag(a, tag_a));
 	CHECK_EQ(tag_a, std::string("-1:5:3"));

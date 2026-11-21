@@ -108,5 +108,7 @@ std::vector<std::string> ExpandBraces(const std::string &pattern);
 bool MatchComponent(const std::string &name, const std::string &pattern);
 //! Remove `\` escapes.
 std::string UnescapeGlob(const std::string &text);
+//! The pattern that names exactly `path`: `\` and the glob characters escaped, so UnescapeGlob gives `path` back.
+std::string EscapeGlob(const std::string &path);
 
 } // namespace webhdfs

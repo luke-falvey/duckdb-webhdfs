@@ -66,6 +66,46 @@ SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b*');
 ----
 a*b.csv
 
+# a directory with a backslash in its name lists its own children, not those of the name without it
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/d\x/f.csv';
+
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/dx/g.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/d\x');
+----
+f.csv
+
+# a file with a backslash in its name is reached by that name from every function
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/a\b.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\b.csv');
+----
+a\b.csv
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/out/escape/a\b.csv');
+----
+1
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:9870/test/out/escape/a\b.csv');
+----
+1
+
+# a directory literally named \.\. is listed as itself, never as the parent
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/dots/\.\./inner.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/dots/\.\.');
+----
+inner.csv
+
 # an escaped '..' is not a parent: it doesn't reach /test/data/people.csv
 statement error
 SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/sub/\.\./people.csv');

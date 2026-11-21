@@ -27,8 +27,9 @@ SELECT path, size, owner FROM webhdfs_ls('webhdfs://namenode:9870/data/**') ORDE
   glob expands to (for `read_*` and `glob()`) come back sorted by full path (byte order), however many listings run at
   once. `webhdfs_ls`, which also returns directories, has no defined row order: use `ORDER BY`.
   In a pattern, a backslash escapes a glob character (`a\*b*` matches names that start with `a*b`). A path with no
-  glob characters left names itself, backslashes included, as in DuckDB: to reach the file `a*b`, use a pattern such
-  as `a[*]b`.
+  unescaped glob characters is taken literally, backslashes included, in every function: `webhdfs_ls('.../a\b')` lists
+  the directory named `a\b`. Unlike DuckDB's local files, `a\*b` on its own is therefore the name `a\*b`; to reach the
+  file `a*b`, use a pattern such as `a[*]b`.
 - Several clusters in one query, each with its own credentials; HA NameNode lists with failover, from a secret or from
   `hdfs-site.xml`.
 - Authentication: Hadoop simple auth (`user.name`), proxy users (`doas`), delegation tokens, Kerberos (SPNEGO, using

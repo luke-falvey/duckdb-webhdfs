@@ -152,11 +152,14 @@ taniabogatsch: 6; the etag test: pdet, lnkuiper, kryonix: 3; R2 unique flag)
 - **hawkfish: the upper epoch bound was 1 ms short.** DuckDB's largest TIMESTAMP is `INT64_MAX - 1` µs, so the last
   whole millisecond is `(INT64_MAX - 1) / 1000`. Unit test at the bound and the bound plus 1.
 - **mytherin: `webhdfs_ls` handed the walk a status for another path.** For a path with glob escapes (`a\*b`), the stat
-  was of the raw path but the walk's root is the unescaped one. The status is handed over only when the two are the
-  same path. A path with no glob characters keeps naming itself, backslashes included, as in `read_*` and `glob()`.
-  (The PR review loop tried unescaping it instead and reverted that; see the dispute there.) Tests:
-  `integration/webhdfs_functions.test` (`a*b.csv` reached by patterns, `a\*b.csv` not found, an escaped `..` not a
-  parent) and `webhdfs_read.test` (an escaped `..` stays inside the allowed directory).
+  was of the raw path but the walk's root is the unescaped one. Now the walk gets the path glob-escapes
+  (`webhdfs::EscapeGlob`), so its root is exactly the path that was stat'ed and checked, and it always gets that
+  status. A path with no unescaped glob characters names itself, backslashes included, in every function (the user's
+  decision A in the PR review loop, where the history is). Tests:
+  - `test/cpp` `glob_escape_literal`;
+  - `integration/webhdfs_functions.test`: directories `d\x` (with a decoy `dx`) and `\.\.`, a file `a\b.csv` from
+    `webhdfs_ls`, `read_csv` and `glob()`, `a*b.csv` reached by patterns, `a\*b.csv` not found;
+  - `webhdfs_read.test`: an escaped `..` stays inside the allowed directory.
 - **lnkuiper, tmonster: the cached CSV read counted only OPEN.** The full request list is now pinned (2
   GETFILESTATUS, from core's CSV reader opening by name), so the upstream fix in O6 shows up as a test diff.
 - **carlopi: `webhdfs_httpfs_loading.test` assumed autoloading was off.** It now has `require no_extension_autoloading`.
@@ -348,7 +351,8 @@ opposite things, would stop the loop and be listed here.
   - `CreateClient` takes the access type with no default (mytherin);
   - `webhdfs_checksum` and `webhdfs_block_locations` check as a file, with a checksum test under the access settings
     (tmonster, pdet);
-  - a `D_ASSERT` in `DataNodeCall` that a skipped check only covers the checked URL (taniabogatsch, hannes, maxxen);
+  - a `D_ASSERT` in `DataNodeCall` (taniabogatsch, hannes, maxxen). As written it could never fail; iteration 3
+    replaced it;
   - a negative `fileId` reads as -1 everywhere (lnkuiper);
   - `WebHdfsSettings::Load` outside the narrowed catch (carlopi);
   - the scope error names an example;
@@ -365,8 +369,8 @@ opposite things, would stop the loop and be listed here.
 - **Declined:**
   - hawkfish: a unit test that the epoch bounds give finite timestamps. The unit tests build without DuckDB, and the
     parser bound they pin is the one that matters.
-  - maxxen, mytherin: a named "already checked" input instead of the `FileType`. The required `FileType` and the
-    `D_ASSERT` keep the skip to the checked URL.
+  - maxxen, mytherin: a named "already checked" input instead of the `FileType`. The required `FileType` keeps the
+    choice explicit at every call site; iteration 3 made the `D_ASSERT` say what holds.
   - carlopi, taniabogatsch: a test of the `ConversionException` catch. No SQL path reaches it (`CREATE SECRET` casts
     first); it stays as defensive code for the legacy secret format.
   - pdet: tests for `\\` and a trailing `\`. They matter only if paths are unescaped, which is the open dispute.
@@ -378,12 +382,42 @@ The loop paused here under its safeguard. Iteration 1 asked for one thing and it
 - hawkfish, carlopi, taniabogatsch and pdet (iteration 2): it must name the same file in every function. tmonster and
   lnkuiper would get there by unescaping in `read_*`, `glob()` and every metadata function as well.
 
-The PR keeps the behaviour before round 3: such a path names itself. That is consistent across functions, matches
-DuckDB's local files, and can't traverse. To decide:
+The PR keeps the behaviour before round 3: such a path names itself. That is consistent across functions and can't
+traverse. (Iteration 3 corrected two claims made here. DuckDB's local files do treat `a\*b` as a pattern, so this is
+not "as in DuckDB". And `webhdfs_ls` on a directory did not yet follow the rule.) To decide:
 - **A. Keep it** (the PR as it stands). The README tells users to reach `a*b` with a pattern such as `a[*]b`.
 - **B. Unescape everywhere.** Every entry point unescapes, behind the glob compiler's `.`/`..` guard, and the access
   check runs on the unescaped path. It changes what `read_csv('.../a\b.csv')` opens for names with real backslashes.
 
-**Decided by the user: A.** A path with no glob characters names itself, as in DuckDB. A finding that only re-argues
+**Decided by the user: A.** A path with no glob characters names itself. A finding that only re-argues
 A against B is declined with a pointer here. The loop then continued with iteration 3, on the iteration-2 fixes.
+
+### Iteration 3 (on 9aea5f4 + ceefb75)
+- **Verdicts:** request changes 15.
+- **Request changes, all on one finding (all 15).** Under A, `webhdfs_ls` on a directory still did not name itself.
+  It stat'ed `x\y` but handed the same string to the walk, whose compiler unescapes the root. So it listed `xy`: zero
+  rows, another directory, or a path the access check never saw.
+  - Fixed: the walk gets `EscapeGlob(path)`, whose root is exactly the path, and always the stat'ed status. That is
+    one GETFILESTATUS, for the checked path.
+  - Tests: a directory `d\x` beside a decoy `dx`; a directory named `\.\.`; a file `a\b.csv` reached by
+    `webhdfs_ls`, `read_csv` and `glob()`; the escape round-trip and the `..` guard in `test/cpp`.
+- **Also raised by several and fixed:**
+  - The iteration-2 `D_ASSERT` compared the client's params with the URL they were built from, so it could never fail.
+    Since checksum and block locations check as a file, no directory client reaches a DataNode, so `DataNodeCall` now
+    asserts that the access check was not skipped. The iteration-2 record and decline reason are corrected (carlopi,
+    dtenwolde, maxxen, samansmink, hawkfish, mytherin, tmonster, kryonix, dentiny, tishj, lnkuiper).
+  - No test showed checksum and block locations refusing the allowed directory itself. `webhdfs_access_control.test`
+    now does it without a cluster (carlopi, maxxen, tmonster, szarnyasg, tishj, kryonix).
+  - `SeedSmallFileCacheSize` also resizes endpoints that already exist (carlopi, maxxen, tmonster, lnkuiper, hawkfish).
+  - `MetaCall::Client` has no default access type either (maxxen, lnkuiper).
+  - README: "as in DuckDB" was wrong, because DuckDB's local files treat `a\*b` as a pattern, and "no glob characters
+    left" read backwards (szarnyasg).
+  - The escaped-`..` access test now aims outside both allow lists (szarnyasg, kryonix).
+- **Smaller fixes:**
+  - `fileId` 0 (HDFS's unknown id) reads as -1 too (taniabogatsch);
+  - comments on the hook and the narrowed catch (taniabogatsch, hawkfish).
+- **Declined:**
+  - tmonster: a separate request-count pin for a backslash directory. The pinned `webhdfs_ls` of a plain directory
+    (one GETFILESTATUS) goes through the same code.
+  - Nothing re-argued A against B.
 

@@ -74,7 +74,8 @@ idx_t WebHdfsSettings::LoadSmallFileCacheSize(DatabaseInstance &db) {
 
 namespace {
 //! Applies a new webhdfs_small_file_cache_size to every cache right away. Core calls OnSet before it stores the value,
-//! so nothing else may set the size from a value it read from the setting (it could undo this one)
+//! so nothing else may set the size from a value it read from the setting (it could undo this one); extension load
+//! seeds it only if this hook has not run yet (WebHdfsFileSystem::SeedSmallFileCacheSize)
 struct CacheSizeOptionInfo : public ExtensionOptionInfo {
 	explicit CacheSizeOptionInfo(std::function<void(idx_t)> apply_p) : apply(std::move(apply_p)) {
 	}

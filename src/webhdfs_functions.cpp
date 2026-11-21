@@ -200,7 +200,7 @@ struct MetaCall {
 
 	//! Most functions take a file or a directory: checked as a directory, the allowed directory itself is accessible.
 	//! Those that only describe a file's contents (checksum, block locations) check it as a file.
-	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed, FileType access_type = FileType::FILE_TYPE_DIR) {
+	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed, FileType access_type) {
 		return fs.CreateClient(url, ContextOpener(context), parsed, access_type);
 	}
 	bool NamedBool(const char *name, bool default_value) const {
@@ -238,7 +238,7 @@ static unique_ptr<RowSource> SingleRow(Row row) {
 
 static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto &settings = client->Settings();
 	WebHdfsWalkOptions options;
 	options.include_hidden = call.NamedBool("include_hidden", settings.include_hidden);
@@ -247,31 +247,31 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	options.files_only = false;
 	FileStatus status;
 	optional_ptr<const FileStatus> root_status;
+	auto pattern = parsed.path;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
-		// a path with no glob characters names itself, backslashes included, as in read_* and glob(): stat it as is.
-		// The walk's root has its escapes removed, so it only gets this status when that is the same path
+		// a path with no glob characters names itself, backslashes included, as in read_* and glob()
 		status = client->GetFileStatus(parsed.path);
 		if (!status.is_dir) {
 			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
-		if (webhdfs::UnescapeGlob(parsed.path) == parsed.path) {
-			root_status = &status;
-		}
+		// the walk takes a pattern: escape the path so that its root is exactly this directory
+		pattern = webhdfs::EscapeGlob(parsed.path);
+		root_status = &status;
 	}
-	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options, root_status);
+	auto walk = make_uniq<WebHdfsWalk>(client, pattern, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));
 }
 
 static unique_ptr<RowSource> MakeStat(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto status = client->GetFileStatus(parsed.path);
 	return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 }
 
 static unique_ptr<RowSource> MakeContentSummary(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETCONTENTSUMMARY", parsed.path), "GETCONTENTSUMMARY");
 	auto summary = doc->Root()["ContentSummary"];
 	auto ec = summary["ecPolicy"];
@@ -291,7 +291,7 @@ static LogicalType TypeQuotaType() {
 
 static unique_ptr<RowSource> MakeQuotaUsage(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETQUOTAUSAGE", parsed.path), "GETQUOTAUSAGE");
 	auto usage = doc->Root()["QuotaUsage"];
 	vector<Value> keys;
@@ -383,7 +383,7 @@ static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETACLSTATUS", parsed.path), "GETACLSTATUS");
 	auto acl = doc->Root()["AclStatus"];
 	auto permission = webhdfs::ParseOctalPermission(acl["permission"].GetString());
@@ -394,7 +394,7 @@ static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	vector<std::pair<string, string>> query {{"encoding", "hex"}};
 	auto names = call.Named("names");
 	if (!names.IsNull()) {
@@ -429,7 +429,7 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSTORAGEPOLICY", parsed.path), "GETSTORAGEPOLICY");
 	auto policy = doc->Root()["BlockStoragePolicy"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), IntegerValue(policy["id"], "GETSTORAGEPOLICY", "id"),
@@ -440,7 +440,7 @@ static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSNAPSHOTLIST", parsed.path), "GETSNAPSHOTLIST");
 	auto snapshots = doc->Root()["SnapshotList"];
 	vector<Row> rows;
@@ -457,7 +457,7 @@ static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSNAPSHOTTABLEDIRECTORYLIST", "/"), "GETSNAPSHOTTABLEDIRECTORYLIST");
 	auto list = doc->Root()["SnapshottableDirectoryList"];
 	vector<Row> rows;
@@ -476,7 +476,7 @@ static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeServerDefaults(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSERVERDEFAULTS", "/"), "GETSERVERDEFAULTS");
 	auto defaults = doc->Root()["FsServerDefaults"];
 	auto bigint = [&](const char *name) {

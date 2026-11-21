@@ -382,7 +382,7 @@ SELECT count(*) FROM webhdfs_stat('webhdfs://localhost:9870/test/order/a.csv');
 
 # an escaped '..' is part of a name, never a parent: it doesn't reach outside the allowed directory
 statement error
-SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/\.\./order/a.csv');
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/\.\./many/f001.txt');
 ----
 no such file or directory
 

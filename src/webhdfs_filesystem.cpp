@@ -180,8 +180,13 @@ void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
 
 void WebHdfsFileSystem::SeedSmallFileCacheSize(idx_t bytes) {
 	lock_guard<mutex> guard(endpoints_lock);
-	if (!small_file_cache_size_set) {
-		small_file_cache_size = bytes;
+	if (small_file_cache_size_set) {
+		return;
+	}
+	small_file_cache_size = bytes;
+	// another connection may already have opened a cluster while the extension was loading
+	for (auto &entry : endpoints) {
+		entry.second->SetSmallFileCacheSize(bytes);
 	}
 }
 
@@ -223,9 +228,9 @@ bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpe
 	} catch (PermissionException &) {
 		return false;
 	}
-	// the site configuration was loaded by the request that created the endpoint. A secret whose options don't
-	// resolve (InvalidConfigurationException, InvalidInputException, or ConversionException for a mistyped value)
-	// shows as NULL; anything else is an error, as it would be for a request
+	// the site configuration was loaded by the request that created the endpoint, and an invalid setting is an error
+	// here as for a request. A secret whose values don't resolve (InvalidConfigurationException, InvalidInputException,
+	// or ConversionException for a mistyped secret value) shows as NULL; anything else is an error too
 	auto &site = SiteConfig();
 	auto settings = WebHdfsSettings::Load(db, opener);
 	try {

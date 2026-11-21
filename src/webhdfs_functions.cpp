@@ -15,6 +15,8 @@
 #include "webhdfs_glob.hpp"
 #include "webhdfs_json.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 using webhdfs::FileStatus;
@@ -196,8 +198,9 @@ struct MetaCall {
 	string url;
 	const named_argument_map_t &named;
 
+	//! The functions take a file or a directory: checked as a directory, the allowed directory itself is accessible
 	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed) {
-		return fs.CreateClient(url, ContextOpener(context), parsed);
+		return fs.CreateClient(url, ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
 	}
 	bool NamedBool(const char *name, bool default_value) const {
 		for (auto &entry : named) {
@@ -705,7 +708,7 @@ static void ExistsFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t url) {
 		webhdfs::WebHdfsUrl parsed;
-		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed);
+		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
 		FileStatus status;
 		return client->TryGetFileStatus(parsed.path, status);
 	});
@@ -716,7 +719,7 @@ static void PathFunction(DataChunk &args, ExpressionState &state, Vector &result
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url) {
 		webhdfs::WebHdfsUrl parsed;
-		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed);
+		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
 		auto doc = ParseJson(client->GetJson(op, root ? "/" : parsed.path), op);
 		auto path = doc->Root()["Path"].GetString();
 		return StringVector::AddString(result, client->UrlFor(path));
@@ -776,13 +779,18 @@ static unique_ptr<GlobalTableFunctionState> NameNodesInit(ClientContext &context
 	auto &bind_data = input.bind_data->Cast<NameNodesBindData>();
 	auto state = make_uniq<NameNodesState>();
 	for (auto &snapshot : bind_data.fs.EndpointSnapshots()) {
-		// auth, NameNode source and secret as this session resolves them now: they depend on its secrets
+		// auth, NameNode source and secret as this session resolves them now for the cluster root: they depend on
+		// its secrets. The endpoint lists every NameNode any configuration used, so they are only shown on the
+		// NameNodes that configuration names (a dropped secret's, another session's or a path-scoped secret's
+		// NameNodes get NULL)
 		WebHdfsConfig config;
 		bool resolved = bind_data.fs.TryResolveConfig(snapshot.key, ContextOpener(context), config);
-		auto auth_mode = resolved ? Value(AuthModeToString(config.auth)) : Value(LogicalType::VARCHAR);
-		auto namenode_source = resolved ? Value(config.namenode_source) : Value(LogicalType::VARCHAR);
-		auto secret_name = resolved ? OptionalString(config.secret_name) : Value(LogicalType::VARCHAR);
 		for (auto &nn : snapshot.namenodes) {
+			bool in_config = resolved && std::find(config.namenodes.begin(), config.namenodes.end(), nn.first) !=
+			                                 config.namenodes.end();
+			auto auth_mode = in_config ? Value(AuthModeToString(config.auth)) : Value(LogicalType::VARCHAR);
+			auto namenode_source = in_config ? Value(config.namenode_source) : Value(LogicalType::VARCHAR);
+			auto secret_name = in_config ? OptionalString(config.secret_name) : Value(LogicalType::VARCHAR);
 			auto batched =
 			    snapshot.batch_listing < 0 ? Value(LogicalType::BOOLEAN) : Value::BOOLEAN(snapshot.batch_listing == 1);
 			state->rows.push_back({Value(snapshot.key), Value(nn.first), Value(nn.second.state),

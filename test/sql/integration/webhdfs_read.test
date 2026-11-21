@@ -323,10 +323,46 @@ true	true
 # allowed_directories applies to the path that is requested: '..' is resolved before the check
 # (keep this last: external access cannot be re-enabled)
 statement ok
-SET allowed_directories = ['webhdfs://localhost:9870/test/data/'];
+SET allowed_directories = ['webhdfs://localhost:9870/test/data/', 'webhdfs://localhost:9870/test/out/allowed_dir/'];
 
 statement ok
 SET enable_external_access = false;
+
+# an allowed directory is itself accessible to calls on a directory, with or without its trailing '/', as in core
+query I
+SELECT count(*) > 0 FROM webhdfs_ls('webhdfs://localhost:9870/test/data/');
+----
+true
+
+query I
+SELECT count(*) > 0 FROM webhdfs_ls('webhdfs://localhost:9870/test/data');
+----
+true
+
+query I
+SELECT count(*) FROM webhdfs_content_summary('webhdfs://localhost:9870/test/data');
+----
+1
+
+# a partitioned write into the allowed directory (DuckDB checks the target itself as a file)
+statement ok
+COPY (SELECT 1 AS x, 2 AS y) TO 'webhdfs://localhost:9870/test/out/allowed_dir/parted' (FORMAT csv, PARTITION_BY (x), OVERWRITE);
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/out/allowed_dir/parted/*/*.csv');
+----
+1
+
+query I
+SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/out/allowed_dir');
+----
+1
+
+# ... but not its parent
+statement error
+SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test');
+----
+disabled by configuration
 
 query I
 SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/sub/../people.csv');

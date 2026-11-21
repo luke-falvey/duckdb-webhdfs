@@ -120,6 +120,30 @@ FROM ops() WHERE op = 'OPEN';
 ----
 OPEN	false	1
 
+# SET to NULL means the default, as RESET does: the cache is on again
+statement ok
+SET GLOBAL webhdfs_small_file_cache_size = 0;
+
+statement ok
+SET GLOBAL webhdfs_small_file_cache_size = NULL;
+
+statement ok
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+
+query I
+SELECT count(*) FROM ops() WHERE op = 'OPEN';
+----
+0
+
+statement ok
+RESET GLOBAL webhdfs_small_file_cache_size;
+
 # with the cache off, reading the file again fetches it again
 statement ok
 SET GLOBAL webhdfs_small_file_cache_size = 0;

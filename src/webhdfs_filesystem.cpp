@@ -147,6 +147,7 @@ WebHdfsEndpoint &WebHdfsFileSystem::GetEndpoint(const string &key) {
 	auto entry = endpoints.find(key);
 	if (entry == endpoints.end()) {
 		entry = endpoints.emplace(key, make_uniq<WebHdfsEndpoint>(key)).first;
+		entry->second->SetSmallFileCacheSize(small_file_cache_size);
 	}
 	return *entry->second;
 }
@@ -170,30 +171,38 @@ vector<WebHdfsEndpoint::Snapshot> WebHdfsFileSystem::EndpointSnapshots() {
 
 void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
 	lock_guard<mutex> guard(endpoints_lock);
+	small_file_cache_size = bytes;
 	for (auto &entry : endpoints) {
 		entry.second->SetSmallFileCacheSize(bytes);
 	}
 }
 
 shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, optional_ptr<FileOpener> opener,
-                                                          WebHdfsUrl &parsed) {
+                                                          WebHdfsUrl &parsed, FileType access_type) {
 	string error;
 	if (!webhdfs::ParseWebHdfsUrl(url, parsed, error)) {
 		throw IOException("Invalid WebHDFS URL \"%s\": %s", url, error);
 	}
 	// The webhdfs_* functions reach this without the virtual file system, and Kerberos contacts the KDC before the
 	// first HTTP request: check what both would check, before any of it.
-	if (db.GetFileSystem().SubSystemIsDisabled(GetName())) {
-		throw PermissionException("File system %s has been disabled by configuration", GetName());
-	}
-	if (!db.config.CanAccessFile(parsed.ToString(), FileType::FILE_TYPE_REGULAR)) {
-		throw PermissionException("Cannot access \"%s\" - file system operations are disabled by configuration",
-		                          parsed.ToString());
-	}
+	CheckAccess(parsed, access_type);
 	auto settings = WebHdfsSettings::Load(db, opener);
 	auto config = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), settings);
 	auto &endpoint = GetEndpoint(parsed.Prefix());
-	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint);
+	// HTTPUtil checks every request against the URL as a regular file, which refuses an allowed directory itself (its
+	// canonical URL has no trailing '/'): for a directory, CheckAccess above is that check
+	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint,
+	                                      access_type == FileType::FILE_TYPE_DIR);
+}
+
+void WebHdfsFileSystem::CheckAccess(const WebHdfsUrl &parsed, FileType access_type) {
+	if (db.GetFileSystem().SubSystemIsDisabled(GetName())) {
+		throw PermissionException("File system %s has been disabled by configuration", GetName());
+	}
+	if (!db.config.CanAccessFile(parsed.ToString(), access_type)) {
+		throw PermissionException("Cannot access \"%s\" - file system operations are disabled by configuration",
+		                          parsed.ToString());
+	}
 }
 
 bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out) {
@@ -202,10 +211,20 @@ bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpe
 	if (!webhdfs::ParseWebHdfsUrl(key, parsed, error)) {
 		return false;
 	}
+	// the same gate as CreateClient: a disabled or refused file system reads no secrets or Hadoop configuration
 	try {
-		out = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), WebHdfsSettings::Load(db, opener));
+		CheckAccess(parsed, FileType::FILE_TYPE_DIR);
+	} catch (PermissionException &) {
+		return false;
+	}
+	// a broken HADOOP_CONF_DIR is an error, as it is for requests; an invalid secret shows as NULL
+	auto &site = SiteConfig();
+	try {
+		out = ResolveWebHdfsConfig(db, opener, parsed, site, WebHdfsSettings::Load(db, opener));
 		return true;
-	} catch (std::exception &) { // NOLINT: an unresolvable configuration shows as NULL
+	} catch (InvalidConfigurationException &) {
+		return false;
+	} catch (InvalidInputException &) {
 		return false;
 	}
 }
@@ -514,14 +533,14 @@ bool WebHdfsFileSystem::FileExists(const string &filename, optional_ptr<FileOpen
 
 bool WebHdfsFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	FileStatus status;
 	return client->TryGetFileStatus(parsed.path, status) && status.is_dir;
 }
 
 void WebHdfsFileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	if (!client->Mkdirs(parsed.path)) {
 		throw IOException("WebHDFS: could not create directory \"%s\"", directory);
 	}
@@ -531,7 +550,7 @@ bool WebHdfsFileSystem::CreateDirectoryExtended(const string &directory, const C
                                                 optional_ptr<FileOpener> opener) {
 	// MKDIRS always creates missing parents, so SINGLE behaves like RECURSIVE
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	FileStatus status;
 	if (client->TryGetFileStatus(parsed.path, status)) {
 		if (!status.is_dir) {
@@ -547,7 +566,7 @@ bool WebHdfsFileSystem::CreateDirectoryExtended(const string &directory, const C
 
 void WebHdfsFileSystem::RemoveDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	FileStatus status;
 	if (!client->TryGetFileStatus(parsed.path, status)) {
 		return;
@@ -561,7 +580,7 @@ void WebHdfsFileSystem::RemoveDirectory(const string &directory, optional_ptr<Fi
 bool WebHdfsFileSystem::RemoveDirectoryExtended(const string &directory, const RemoveDirectoryOptions &options,
                                                 optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	FileStatus status;
 	if (!client->TryGetFileStatus(parsed.path, status) || !status.is_dir) {
 		return false;
@@ -698,7 +717,7 @@ bool WebHdfsFileSystem::ListFilesExtended(const string &directory,
 		return true;
 	}
 	WebHdfsUrl parsed;
-	auto client = CreateClient(directory, opener, parsed);
+	auto client = CreateClient(directory, opener, parsed, FileType::FILE_TYPE_DIR);
 	return client->TryListDirectory(parsed.path, [&](vector<FileStatus> &entries) {
 		for (auto &entry : entries) {
 			if (entry.path_suffix.empty()) {

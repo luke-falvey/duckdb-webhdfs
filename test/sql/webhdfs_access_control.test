@@ -4,7 +4,7 @@
 
 require webhdfs
 
-require httpfs
+# no httpfs: the checks come before anything that needs it
 
 # a secret that turns on Kerberos: the check must come before the ticket cache and the KDC are used
 statement ok

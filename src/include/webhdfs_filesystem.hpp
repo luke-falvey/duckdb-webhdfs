@@ -71,15 +71,19 @@ public:
 	explicit WebHdfsFileSystem(DatabaseInstance &db);
 	~WebHdfsFileSystem() override;
 
-	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs.
+	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs, and
+	//! PermissionException if the access settings refuse `url`, checked as `access_type` (FILE_TYPE_DIR for calls on
+	//! a directory, which allowed_directories matches with a trailing '/', as core does)
 	shared_ptr<WebHdfsClient> CreateClient(const string &url, optional_ptr<FileOpener> opener,
-	                                       webhdfs::WebHdfsUrl &parsed);
+	                                       webhdfs::WebHdfsUrl &parsed,
+	                                       FileType access_type = FileType::FILE_TYPE_REGULAR);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
-	//! Resize the small-file cache of every cluster in use (webhdfs_small_file_cache_size)
+	//! Resize the small-file cache of every cluster, in use or created later (webhdfs_small_file_cache_size). The
+	//! setting's OnSet hook and extension load are the only callers: a client never sets the size itself
 	void SetSmallFileCacheSize(idx_t bytes);
-	//! The configuration a request to endpoint `key` (scheme://authority) would use for the caller of `opener`;
-	//! false if it can't be resolved (e.g. an invalid secret)
+	//! The configuration a request to the root of endpoint `key` (scheme://authority) would use for the caller of
+	//! `opener`; false if access is refused or it can't be resolved (e.g. an invalid secret)
 	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
@@ -163,6 +167,8 @@ protected:
 	}
 
 private:
+	//! disabled_filesystems and the file access settings, checked before any secret lookup, Kerberos or request
+	void CheckAccess(const webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	//! The cluster names offered for "scheme://": secret scopes, hdfs-site.xml nameservices and clusters in use
 	void ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
 	                      const std::function<void(OpenFileInfo &info)> &callback);
@@ -170,6 +176,8 @@ private:
 	DatabaseInstance &db;
 	mutex endpoints_lock;
 	unordered_map<string, unique_ptr<WebHdfsEndpoint>> endpoints;
+	//! The small-file cache size every endpoint uses (guarded by endpoints_lock)
+	idx_t small_file_cache_size = WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE;
 	mutex site_lock;
 	bool site_loaded = false;
 	webhdfs::HadoopConfig site;

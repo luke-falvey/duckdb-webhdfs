@@ -252,6 +252,22 @@ CREATE SECRET bad_scope (TYPE webhdfs, SCOPE ['webhdfs://ok', 'prod']);
 ----
 SCOPE 'prod' must start with 'webhdfs://' or 'swebhdfs://'
 
+# the whole scheme is required: 'webhdfs:/' would match every webhdfs:// URL, 'WEBHDFS' and 'w' none
+statement error
+CREATE SECRET bad_scope (TYPE webhdfs, SCOPE 'webhdfs:/');
+----
+SCOPE 'webhdfs:/' must start with 'webhdfs://' or 'swebhdfs://'
+
+statement error
+CREATE SECRET bad_scope (TYPE webhdfs, SCOPE 'WEBHDFS');
+----
+SCOPE 'WEBHDFS' must start with 'webhdfs://' or 'swebhdfs://'
+
+statement error
+CREATE SECRET bad_scope (TYPE webhdfs, SCOPE 'w');
+----
+SCOPE 'w' must start with 'webhdfs://' or 'swebhdfs://'
+
 statement ok
 CREATE SECRET scheme_scope (TYPE webhdfs, SCOPE 'SWEBHDFS://prod');
 

@@ -420,8 +420,9 @@ TEST(json_file_status_times) {
 	CHECK_EQ(status.modification_time, MIN_EPOCH_MS);
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372022400001}})", status, error));
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372036854774}})", status, error));
-	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854774}})", status, error));
-	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775}})", status, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775}})", status, error));
+	CHECK_EQ(status.modification_time, MAX_EPOCH_MS);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854776}})", status, error));
 }
 
 TEST(xattr_hex_values) {

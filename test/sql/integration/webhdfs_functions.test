@@ -206,6 +206,12 @@ SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.c
 ----
 0
 
+# ... but the path must exist
+statement error
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/missing.csv', names := []);
+----
+no such file or directory
+
 query TT
 SELECT name, storage_types FROM webhdfs_storage_policy('webhdfs://localhost:9870/test');
 ----

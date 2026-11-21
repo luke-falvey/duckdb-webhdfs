@@ -41,12 +41,24 @@ LISTSTATUS_BATCH	true	15
 OPEN	false	12
 OPEN	true	12
 
-# the listing carries an etag, so the Parquet metadata cache can validate the files without opening them
+# the listing carries an etag, so the Parquet metadata cache can validate the files without opening them. The
+# small-file cache is off here, or it would hide whether the files are opened again
+statement ok
+SET GLOBAL webhdfs_small_file_cache_size = 0;
+
 statement ok
 SET parquet_metadata_cache = true;
 
 statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
 SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/hive/year=2023/month=*/*.parquet');
+
+query I
+SELECT count(*) > 0 FROM ops() WHERE op = 'OPEN';
+----
+true
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -61,8 +73,57 @@ FROM ops();
 ----
 LISTSTATUS_BATCH	true	15
 
+# without the metadata cache the same scan opens the files again
+statement ok
+SET parquet_metadata_cache = false;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/hive/year=2023/month=*/*.parquet');
+
+query I
+SELECT count(*) > 0 FROM ops() WHERE op = 'OPEN';
+----
+true
+
+# a file that is replaced gets a new tag (a new fileId and mtime): its cached metadata is not used
+statement ok
+SET parquet_metadata_cache = true;
+
+statement ok
+COPY (SELECT range FROM range(10)) TO 'webhdfs://localhost:9870/test/out/requests_etag/t.parquet';
+
+query I
+SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/out/requests_etag/*.parquet');
+----
+10
+
+statement ok
+COPY (SELECT range FROM range(20)) TO 'webhdfs://localhost:9870/test/out/requests_etag/t.parquet';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/out/requests_etag/*.parquet');
+----
+20
+
+query I
+SELECT count(*) > 0 FROM ops() WHERE op = 'OPEN';
+----
+true
+
 statement ok
 RESET parquet_metadata_cache;
+
+statement ok
+RESET GLOBAL webhdfs_small_file_cache_size;
+
+statement ok
+CALL truncate_duckdb_logs();
 
 statement ok
 CALL truncate_duckdb_logs();
@@ -95,10 +156,11 @@ CALL truncate_duckdb_logs();
 statement ok
 SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
 
-query I
-SELECT count(*) FROM ops() WHERE op = 'OPEN';
+# no OPEN; DuckDB's CSV reader opens the file by name twice (sniff, scan), so each open costs a GETFILESTATUS
+query TTI
+FROM ops();
 ----
-0
+GETFILESTATUS	true	2
 
 # a new cache size applies to the clusters in use right away: setting it to 0 drops the cached file even though no
 # request is made before it is raised again. The read fetches the file from the DataNode again (with the redirect

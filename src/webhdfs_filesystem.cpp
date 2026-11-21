@@ -286,9 +286,13 @@ OpenFileInfo WebHdfsFileSystem::MakeOpenFileInfo(const string &url, const FileSt
 	options.emplace("type", Value(status.is_dir ? "directory" : "file"));
 	options.emplace("file_size", Value::BIGINT(status.length));
 	options.emplace("last_modified", Value::TIMESTAMP(WebHdfsTimestamp(status.modification_time)));
-	// what GetVersionTag returns for the opened file: caches that validate listed files (Parquet metadata) compare them
-	options.emplace(
-	    "etag", Value(VersionTag(status.modification_time, NumericCast<idx_t>(MaxValue<int64_t>(status.length, 0)))));
+	options.emplace("file_id", Value::BIGINT(status.file_id));
+	// what GetVersionTag returns for the opened file: caches that validate listed files (Parquet metadata) compare
+	// them. A negative length opens no handle (it fails at GETFILESTATUS), so it has no tag
+	if (status.length >= 0) {
+		options.emplace("etag", Value(VersionTag(status.file_id, status.modification_time,
+		                                         UnsafeNumericCast<idx_t>(status.length))));
+	}
 	return info;
 }
 
@@ -355,6 +359,10 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 	    (!file.extended_info->TryGetOption("type", type) || type == "file")) {
 		handle->length = file_size;
 		handle->modification_time_ms = Timestamp::GetEpochMs(last_modified);
+		auto file_id = file.extended_info->options.find("file_id");
+		if (file_id != file.extended_info->options.end() && !file_id->second.IsNull()) {
+			handle->file_id = file_id->second.GetValue<int64_t>();
+		}
 		return std::move(handle);
 	}
 	FileStatus status;
@@ -369,6 +377,7 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 	}
 	handle->length = FileLength(status, file.path);
 	handle->modification_time_ms = status.modification_time;
+	handle->file_id = status.file_id;
 	return std::move(handle);
 }
 
@@ -483,13 +492,13 @@ timestamp_t WebHdfsFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	return WebHdfsTimestamp(handle.Cast<WebHdfsFileHandle>().modification_time_ms);
 }
 
-string WebHdfsFileSystem::VersionTag(int64_t modification_time_ms, idx_t length) {
-	return std::to_string(modification_time_ms) + ":" + std::to_string(length);
+string WebHdfsFileSystem::VersionTag(int64_t file_id, int64_t modification_time_ms, idx_t length) {
+	return std::to_string(file_id) + ":" + std::to_string(modification_time_ms) + ":" + std::to_string(length);
 }
 
 string WebHdfsFileSystem::GetVersionTag(FileHandle &handle_p) {
 	auto &handle = handle_p.Cast<WebHdfsFileHandle>();
-	return VersionTag(handle.modification_time_ms, handle.length);
+	return VersionTag(handle.file_id, handle.modification_time_ms, handle.length);
 }
 
 FileType WebHdfsFileSystem::GetFileType(FileHandle &handle) {

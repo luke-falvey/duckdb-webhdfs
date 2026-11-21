@@ -90,11 +90,12 @@ static void ValidateNameNodes(const Value &namenodes) {
 	}
 }
 
-//! A scope that no webhdfs:// or swebhdfs:// URL can match (e.g. 'hdfs://prod' or 'prod') would leave the secret unused
+//! A scope that no webhdfs:// or swebhdfs:// URL can match (e.g. 'hdfs://prod', 'prod' or 'WEBHDFS') would leave the
+//! secret unused, and one like 'webhdfs:/' would match every URL of the scheme: the whole scheme is required
 static void ValidateScope(const string &scope) {
 	auto lower = StringUtil::Lower(scope);
 	for (auto scheme : {"webhdfs://", "swebhdfs://"}) {
-		if (StringUtil::StartsWith(lower, scheme) || StringUtil::StartsWith(scheme, lower)) {
+		if (StringUtil::StartsWith(lower, scheme)) {
 			return;
 		}
 	}

@@ -97,9 +97,10 @@ struct RemoteException {
 };
 
 //! Range of epoch milliseconds a FileStatus time may have: DuckDB's TIMESTAMP range (290309-12-22 BC to 294247-01-10).
-//! The lower end is not -MAX_EPOCH_MS: DuckDB's smallest TIMESTAMP is a whole day.
+//! The lower end is not -MAX_EPOCH_MS: DuckDB's smallest TIMESTAMP is a whole day. The largest is INT64_MAX - 1 µs
+//! (INT64_MAX is infinity), so its last whole millisecond is (INT64_MAX - 1) / 1000.
 constexpr int64_t MIN_EPOCH_MS = -9223372022400000;
-constexpr int64_t MAX_EPOCH_MS = INT64_MAX / 1000 - 1;
+constexpr int64_t MAX_EPOCH_MS = (INT64_MAX - 1) / 1000;
 
 //! A name the server may return as a pathSuffix: no '/' or NUL, not "." or "..". "" (the listed path is a file) is
 //! valid.

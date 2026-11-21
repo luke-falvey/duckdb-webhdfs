@@ -253,14 +253,17 @@ statement ok
 SET webhdfs_list_parallelism = {parallelism};
 
 query I
-SELECT list(replace(file, 'webhdfs://localhost:9870/test/order/', '')) FROM glob('webhdfs://localhost:9870/test/order/**/*.csv');
+SELECT replace(file, 'webhdfs://localhost:9870/test/order/', '') FROM glob('webhdfs://localhost:9870/test/order/**/*.csv');
 ----
-[a-b/y.csv, a.csv, a/x.csv]
+a-b/y.csv
+a.csv
+a/x.csv
 
 query I
-SELECT list(replace(file, 'webhdfs://localhost:9870/test/order/', '')) FROM glob('webhdfs://localhost:9870/test/order/*/*.csv');
+SELECT replace(file, 'webhdfs://localhost:9870/test/order/', '') FROM glob('webhdfs://localhost:9870/test/order/*/*.csv');
 ----
-[a-b/y.csv, a/x.csv]
+a-b/y.csv
+a/x.csv
 
 endloop
 

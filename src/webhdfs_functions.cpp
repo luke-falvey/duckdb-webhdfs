@@ -251,7 +251,10 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 		if (!status.is_dir) {
 			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
-		root_status = &status;
+		// the walk's root is the path with its glob escapes removed: hand it this status only if that is the same path
+		if (webhdfs::UnescapeGlob(parsed.path) == parsed.path) {
+			root_status = &status;
+		}
 	}
 	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));
@@ -399,7 +402,9 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 			}
 		}
 		if (query.size() == 1) {
-			// an empty filter selects nothing (GETXATTRS without a name would return every attribute)
+			// an empty filter selects nothing (GETXATTRS without a name would return every attribute), but a missing
+			// path is still an error, as with any other filter
+			client->GetFileStatus(parsed.path);
 			return make_uniq<VectorRowSource>(vector<Row>());
 		}
 	}

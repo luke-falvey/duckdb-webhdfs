@@ -425,6 +425,27 @@ TEST(json_file_status_times) {
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854776}})", status, error));
 }
 
+TEST(version_tag) {
+	FileStatus a, b;
+	std::string error, tag_a, tag_b;
+	// two files of the same length and mtime are told apart by their fileId
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":7}})", a, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":8}})", b, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK(ListingEtag(b, tag_b));
+	CHECK_EQ(tag_a, std::string("7:5:3"));
+	CHECK(tag_a != tag_b);
+	// the listing's etag is the handle's version tag
+	CHECK_EQ(tag_a, VersionTag(7, 5, 3));
+	// no fileId from the server: -1
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5}})", a, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
+	// a negative length has no etag
+	a.length = -1;
+	CHECK(!ListingEtag(a, tag_a));
+}
+
 TEST(xattr_hex_values) {
 	std::string bytes;
 	CHECK(DecodeHex("0x626c7565", bytes));

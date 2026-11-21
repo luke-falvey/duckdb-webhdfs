@@ -108,7 +108,7 @@ HTTPUtil &WebHdfsHttp::GetHttpUtil(DatabaseInstance &db) {
 }
 
 unique_ptr<HTTPParams> WebHdfsHttp::CreateParams(DatabaseInstance &db, optional_ptr<FileOpener> opener,
-                                                 const string &original_url, bool access_checked) {
+                                                 const string &original_url, FileType access_type) {
 	auto &util = GetHttpUtil(db);
 	unique_ptr<HTTPParams> params;
 	if (opener) {
@@ -121,7 +121,7 @@ unique_ptr<HTTPParams> WebHdfsHttp::CreateParams(DatabaseInstance &db, optional_
 	// we follow redirects ourselves: DataNode hosts may need rewriting and bodies must not go to the NameNode
 	params->follow_location = false;
 	params->access_path = original_url;
-	params->skip_external_access_check = access_checked;
+	params->skip_external_access_check = access_type == FileType::FILE_TYPE_DIR;
 	return params;
 }
 

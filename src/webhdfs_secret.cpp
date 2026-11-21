@@ -90,8 +90,9 @@ static void ValidateNameNodes(const Value &namenodes) {
 	}
 }
 
-//! A scope that no webhdfs:// or swebhdfs:// URL can match (e.g. 'hdfs://prod', 'prod' or 'WEBHDFS') would leave the
-//! secret unused, and one like 'webhdfs:/' would match every URL of the scheme: the whole scheme is required
+//! The scope must name the whole scheme: one no webhdfs:// or swebhdfs:// URL can match ('hdfs://prod', 'prod',
+//! 'WEBHDFS') would leave the secret unused, and a partial one ('webhdfs:/') would apply to every URL by accident.
+//! A scope for every cluster says so explicitly ('webhdfs://'), as for other secret types.
 static void ValidateScope(const string &scope) {
 	auto lower = StringUtil::Lower(scope);
 	for (auto scheme : {"webhdfs://", "swebhdfs://"}) {

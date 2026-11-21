@@ -145,10 +145,6 @@ public:
 		return "WebHdfsFileSystem";
 	}
 
-	//! The version tag of a file (GetVersionTag, and the "etag" of a listed file). The fileId is in it because the
-	//! mtime can be set by clients (setTimes, distcp -pt): a replacement of the same length with the old mtime is
-	//! still a new inode
-	static string VersionTag(int64_t file_id, int64_t modification_time_ms, idx_t length);
 	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime, type and etag travel with it
 	static OpenFileInfo MakeOpenFileInfo(const string &url, const webhdfs::FileStatus &status);
 

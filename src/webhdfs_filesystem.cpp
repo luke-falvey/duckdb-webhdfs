@@ -189,10 +189,8 @@ shared_ptr<WebHdfsClient> WebHdfsFileSystem::CreateClient(const string &url, opt
 	auto settings = WebHdfsSettings::Load(db, opener);
 	auto config = ResolveWebHdfsConfig(db, opener, parsed, SiteConfig(), settings);
 	auto &endpoint = GetEndpoint(parsed.Prefix());
-	// HTTPUtil checks every request against the URL as a regular file, which refuses an allowed directory itself (its
-	// canonical URL has no trailing '/'): for a directory, CheckAccess above is that check
 	return make_shared_ptr<WebHdfsClient>(db, opener, parsed, std::move(config), std::move(settings), endpoint,
-	                                      access_type == FileType::FILE_TYPE_DIR);
+	                                      access_type);
 }
 
 void WebHdfsFileSystem::CheckAccess(const WebHdfsUrl &parsed, FileType access_type) {
@@ -217,7 +215,9 @@ bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpe
 	} catch (PermissionException &) {
 		return false;
 	}
-	// a broken HADOOP_CONF_DIR is an error, as it is for requests; an invalid secret shows as NULL
+	// the site configuration was loaded by the request that created the endpoint. A secret whose options don't
+	// resolve (InvalidConfigurationException, InvalidInputException, or ConversionException for a mistyped value)
+	// shows as NULL; anything else is an error, as it would be for a request
 	auto &site = SiteConfig();
 	try {
 		out = ResolveWebHdfsConfig(db, opener, parsed, site, WebHdfsSettings::Load(db, opener));
@@ -225,6 +225,8 @@ bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpe
 	} catch (InvalidConfigurationException &) {
 		return false;
 	} catch (InvalidInputException &) {
+		return false;
+	} catch (ConversionException &) {
 		return false;
 	}
 }
@@ -286,12 +288,13 @@ OpenFileInfo WebHdfsFileSystem::MakeOpenFileInfo(const string &url, const FileSt
 	options.emplace("type", Value(status.is_dir ? "directory" : "file"));
 	options.emplace("file_size", Value::BIGINT(status.length));
 	options.emplace("last_modified", Value::TIMESTAMP(WebHdfsTimestamp(status.modification_time)));
-	options.emplace("file_id", Value::BIGINT(status.file_id));
-	// what GetVersionTag returns for the opened file: caches that validate listed files (Parquet metadata) compare
-	// them. A negative length opens no handle (it fails at GETFILESTATUS), so it has no tag
-	if (status.length >= 0) {
-		options.emplace("etag", Value(VersionTag(status.file_id, status.modification_time,
-		                                         UnsafeNumericCast<idx_t>(status.length))));
+	if (status.file_id >= 0) {
+		options.emplace("file_id", Value::BIGINT(status.file_id));
+	}
+	// what GetVersionTag returns for the opened file: caches that validate listed files (Parquet metadata) compare them
+	string etag;
+	if (webhdfs::ListingEtag(status, etag)) {
+		options.emplace("etag", Value(etag));
 	}
 	return info;
 }
@@ -359,8 +362,9 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 	    (!file.extended_info->TryGetOption("type", type) || type == "file")) {
 		handle->length = file_size;
 		handle->modification_time_ms = Timestamp::GetEpochMs(last_modified);
+		// absent when the server sent none: the handle keeps -1, as the listing's etag does
 		auto file_id = file.extended_info->options.find("file_id");
-		if (file_id != file.extended_info->options.end() && !file_id->second.IsNull()) {
+		if (file_id != file.extended_info->options.end()) {
 			handle->file_id = file_id->second.GetValue<int64_t>();
 		}
 		return std::move(handle);
@@ -492,13 +496,9 @@ timestamp_t WebHdfsFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	return WebHdfsTimestamp(handle.Cast<WebHdfsFileHandle>().modification_time_ms);
 }
 
-string WebHdfsFileSystem::VersionTag(int64_t file_id, int64_t modification_time_ms, idx_t length) {
-	return std::to_string(file_id) + ":" + std::to_string(modification_time_ms) + ":" + std::to_string(length);
-}
-
 string WebHdfsFileSystem::GetVersionTag(FileHandle &handle_p) {
 	auto &handle = handle_p.Cast<WebHdfsFileHandle>();
-	return VersionTag(handle.file_id, handle.modification_time_ms, handle.length);
+	return webhdfs::VersionTag(handle.file_id, handle.modification_time_ms, handle.length);
 }
 
 FileType WebHdfsFileSystem::GetFileType(FileHandle &handle) {

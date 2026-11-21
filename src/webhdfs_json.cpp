@@ -475,4 +475,16 @@ bool DecodeHex(const std::string &text, std::string &out) {
 	return true;
 }
 
+std::string VersionTag(int64_t file_id, int64_t modification_time_ms, uint64_t length) {
+	return std::to_string(file_id) + ":" + std::to_string(modification_time_ms) + ":" + std::to_string(length);
+}
+
+bool ListingEtag(const FileStatus &status, std::string &out) {
+	if (status.length < 0) {
+		return false;
+	}
+	out = VersionTag(status.file_id, status.modification_time, static_cast<uint64_t>(status.length));
+	return true;
+}
+
 } // namespace webhdfs

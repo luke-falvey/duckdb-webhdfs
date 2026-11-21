@@ -271,6 +271,13 @@ SCOPE 'w' must start with 'webhdfs://' or 'swebhdfs://'
 statement ok
 CREATE SECRET scheme_scope (TYPE webhdfs, SCOPE 'SWEBHDFS://prod');
 
+# every cluster of a scheme is asked for explicitly
+statement ok
+CREATE SECRET all_scope (TYPE webhdfs, SCOPE 'webhdfs://');
+
+statement ok
+DROP SECRET all_scope;
+
 statement ok
 DROP SECRET scheme_scope;
 

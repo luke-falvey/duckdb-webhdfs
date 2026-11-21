@@ -329,6 +329,9 @@ statement ok
 SET allowed_directories = ['webhdfs://localhost:9870/test/data/', 'webhdfs://localhost:9870/test/out/allowed_dir/'];
 
 statement ok
+SET allowed_paths = ['webhdfs://localhost:9870/test/order/a.csv'];
+
+statement ok
 SET enable_external_access = false;
 
 # an allowed directory is itself accessible to calls on a directory, with or without its trailing '/', as in core
@@ -347,7 +350,22 @@ SELECT count(*) FROM webhdfs_content_summary('webhdfs://localhost:9870/test/data
 ----
 1
 
-# a partitioned write into the allowed directory (DuckDB checks the target itself as a file)
+query I
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/data');
+----
+true
+
+# EXPORT DATABASE to the allowed directory itself: DuckDB checks it as a directory, then the file system's
+# DirectoryExists and CreateDirectory get it (a COPY target, even with a '/', is checked as a file and refused)
+statement ok
+EXPORT DATABASE 'webhdfs://localhost:9870/test/out/allowed_dir';
+
+query I
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/out/allowed_dir/schema.sql');
+----
+true
+
+# a partitioned write below it
 statement ok
 COPY (SELECT 1 AS x, 2 AS y) TO 'webhdfs://localhost:9870/test/out/allowed_dir/parted' (FORMAT csv, PARTITION_BY (x), OVERWRITE);
 
@@ -356,10 +374,17 @@ SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/out/allowed_dir/par
 ----
 1
 
+# a file allowed by allowed_paths stays accessible to the metadata functions, which check as a directory
 query I
-SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/out/allowed_dir');
+SELECT count(*) FROM webhdfs_stat('webhdfs://localhost:9870/test/order/a.csv');
 ----
 1
+
+# a sibling whose name starts with the allowed directory's is not inside it
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:9870/test/data2');
+----
+disabled by configuration
 
 # ... but not its parent
 statement error

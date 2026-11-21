@@ -35,7 +35,26 @@ SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes(
 ----
 localhost:6	NULL	NULL	NULL
 
-# with file access off, the function reads no secrets or Hadoop configuration (keep this last)
+# the columns describe the cluster root: a path-scoped secret that uses the root's NameNode (here the URL's) is not
+# what the root resolves to, so the row shows the root's configuration
+statement ok
+CREATE SECRET sub_same_nn (TYPE webhdfs, SCOPE 'webhdfs://localhost:7/sub', AUTH 'none');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:7/sub/x.csv');
+----
+no NameNode could serve the request
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:7';
+----
+localhost:7	simple	url	NULL
+
+# when the access settings refuse the cluster root (only a directory below it is allowed, or file access is off), the
+# function reads no secrets or Hadoop configuration for it (keep this last)
+statement ok
+SET allowed_directories = ['webhdfs://127.0.0.3/data/'];
+
 statement ok
 SET enable_external_access = false;
 

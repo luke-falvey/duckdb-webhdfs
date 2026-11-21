@@ -129,9 +129,9 @@ WebHdfsErrorKind ClassifyWebHdfsError(const WebHdfsHttpResult &result, webhdfs::
 
 class WebHdfsClient {
 public:
-	//! `access_checked`: the caller made HTTPUtil's file access check itself (see WebHdfsHttp::CreateParams)
+	//! `access_type`: how CreateClient checked `url` (see WebHdfsHttp::CreateParams)
 	WebHdfsClient(DatabaseInstance &db, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url, WebHdfsConfig config,
-	              WebHdfsSettings settings, WebHdfsEndpoint &endpoint, bool access_checked = false);
+	              WebHdfsSettings settings, WebHdfsEndpoint &endpoint, FileType access_type);
 
 	const webhdfs::WebHdfsUrl &Url() const {
 		return url;

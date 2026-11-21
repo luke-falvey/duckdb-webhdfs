@@ -159,7 +159,7 @@ Build changes:
 |---|---|
 | `OpenFile` (read) | `GETFILESTATUS` (size, mtime, type). It is skipped when `OpenFileExtended` already has size and mtime from a listing. |
 | `Read(handle, buf, n, offset)` | `GET P?op=OPEN&offset=&length=` to the NameNode → `307` → `GET <Location>` on the DataNode, streamed into the caller's buffer through `content_handler`. Behind a gateway, the first response is already `200` with the data. |
-| `GetFileSize`, `GetLastModifiedTime`, `GetVersionTag` | Values cached on the handle. The version tag is `"<fileId>:<mtime>:<length>"`, so the external file cache can validate reads without another request. The inode id is in it because clients can set the mtime (`setTimes`, `distcp -pt`); listed files carry the same tag as their `etag`. |
+| `GetFileSize`, `GetLastModifiedTime`, `GetVersionTag` | Values cached on the handle. The version tag is `"<fileId>:<mtime>:<length>"`, so the external file cache can validate reads without another request. The inode id is in it because clients can set the mtime (`setTimes`, `distcp -pt`); a server that sends no `fileId` gives -1, which leaves the mtime and length. Listed files carry the same tag as their `etag`. |
 | `OpenFile` (write) | Nothing yet. The file is created on the first flush (see Writes). |
 | `Write` / `Close` | Buffer, then `PUT ?op=CREATE&overwrite=true` (`overwrite=false` for `EXCLUSIVE_CREATE` and `NULL_IF_EXISTS`, which COPY uses for new files) → `307` → `PUT <Location>` with the body. Later chunks: `POST ?op=APPEND` → `307` → `POST <Location>` with the body. |
 | `FILE_FLAGS_APPEND` | Every flush is an `APPEND`. |

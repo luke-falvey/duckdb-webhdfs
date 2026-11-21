@@ -247,14 +247,13 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	FileStatus status;
 	optional_ptr<const FileStatus> root_status;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
-		status = client->GetFileStatus(parsed.path);
+		// a\*b names the file a*b, as it does in a glob: stat the path the walk would list
+		auto literal = webhdfs::UnescapeGlob(parsed.path);
+		status = client->GetFileStatus(literal);
 		if (!status.is_dir) {
-			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
+			return SingleRow(EntryRow(client->UrlFor(literal), literal, status));
 		}
-		// the walk's root is the path with its glob escapes removed: hand it this status only if that is the same path
-		if (webhdfs::UnescapeGlob(parsed.path) == parsed.path) {
-			root_status = &status;
-		}
+		root_status = &status;
 	}
 	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));

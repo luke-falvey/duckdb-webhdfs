@@ -5,6 +5,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/common/file_opener.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/main/http/http_util.hpp"
 
 #include <functional>
@@ -56,10 +57,13 @@ public:
 	static HTTPUtil &GetHttpUtil(DatabaseInstance &db);
 
 	//! HTTP parameters for requests made on behalf of `original_url` (a webhdfs:// URL): httpfs settings and any
-	//! `http` secret scoped to that URL apply, and HTTPUtil's file access check is made against it, as a regular file.
-	//! `access_checked`: the caller has made that check itself (for a directory, which HTTPUtil can't check as one).
+	//! `http` secret scoped to that URL apply, and HTTPUtil's file access check is made against it as a regular file.
+	//! For `access_type` FILE_TYPE_DIR, HTTPUtil's check is skipped: it can't check a directory as one, and
+	//! WebHdfsFileSystem::CreateClient has just checked the same URL as a directory. The skip only holds while every
+	//! request's access path is `original_url`: params built for another URL (a DataNode leg, O9) must not take it.
 	static unique_ptr<HTTPParams> CreateParams(DatabaseInstance &db, optional_ptr<FileOpener> opener,
-	                                           const string &original_url, bool access_checked = false);
+	                                           const string &original_url,
+	                                           FileType access_type = FileType::FILE_TYPE_REGULAR);
 
 	static WebHdfsHttpResult Get(DatabaseInstance &db, HTTPParams &params, const string &url,
 	                             const vector<std::pair<string, string>> &headers,

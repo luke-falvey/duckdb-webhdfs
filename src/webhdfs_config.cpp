@@ -60,12 +60,16 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
-	// global-only (see Register): read it without the opener. Only extension load reads it: after that, OnSet is the
-	// one writer of the caches' size, because a value loaded here can be older than one OnSet just applied
-	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
-		settings.small_file_cache_size = value.GetValue<uint64_t>();
-	}
 	return settings;
+}
+
+idx_t WebHdfsSettings::LoadSmallFileCacheSize(DatabaseInstance &db) {
+	// global-only (see Register): read without an opener
+	Value value;
+	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
+		return value.GetValue<uint64_t>();
+	}
+	return DEFAULT_SMALL_FILE_CACHE_SIZE;
 }
 
 namespace {

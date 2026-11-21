@@ -47,16 +47,19 @@ R2-3 half done)
   - The repo's own test showed it: after `DROP SECRET loopback_tmp`, `localhost:3` was labelled `loopback`, and
     `SELECT DISTINCT` hid that.
 - Now:
-  - The three columns are documented as "as this session would resolve them for the cluster root".
+  - The three columns are documented as "as this session would resolve them for the cluster root". So a secret
+    scoped to a path below the root is never shown, even for the NameNode its requests went to: with no `NAMENODES`
+    of its own, its row shows the root's configuration (szarnyasg, PR review).
   - They are filled only on rows whose NameNode is in that configuration. A dropped secret's NameNode, another
-    session's, or a path-scoped secret's gets NULL.
+    session's, or a path-scoped secret's `NAMENODES` get NULL.
   - `TryResolveConfig` runs the same `disabled_filesystems` and external-access gate as `CreateClient` (hannes,
     mytherin).
-  - It no longer swallows every exception: a broken `HADOOP_CONF_DIR` is an error, as it is for requests, and an
-    invalid secret shows as NULL (dtenwolde, maxxen).
+  - It no longer swallows every exception (dtenwolde, maxxen). An invalid secret (`InvalidConfigurationException`,
+    `InvalidInputException`, or `ConversionException` for a mistyped value) shows as NULL; anything else is an error.
 - Tests:
   - `webhdfs_secret_persistent.test`: row by row, no DISTINCT.
-  - New `webhdfs_namenodes_session.test`: a root-scoped secret, a path-scoped one, and external access off.
+  - New `webhdfs_namenodes_session.test`: a root-scoped secret, a path-scoped one with and without its own
+    `NAMENODES`, and the root refused by `allowed_directories` with external access off.
 - Considered and not done: one row per matching secret, or a `secret_names` list. Both change the schema. They can come
   with O3.
 
@@ -80,9 +83,12 @@ taniabogatsch: 8; R2-7 copied an older problem into a second place)
   - File opens still check as regular files.
 - Test: `integration/webhdfs_read.test`:
   - `webhdfs_ls` on the allowed directory, with and without the slash;
-  - `webhdfs_content_summary` on it;
-  - a partitioned `COPY` below it, then listing it;
-  - its parent still refused.
+  - `webhdfs_content_summary` and `webhdfs_exists` on it;
+  - `EXPORT DATABASE` to it, which reaches the file system's `DirectoryExists` and `CreateDirectory` on the directory
+    itself. A COPY can't: core checks its target as a file, even with a trailing `/`;
+  - a partitioned `COPY` below it (a regression guard: that passed before too);
+  - a file in `allowed_paths` still accessible to the metadata functions;
+  - its parent and a sibling with the same prefix (`/test/data2`) still refused.
 
 **R3-4. `CREATE SECRET` accepted scopes that are a prefix of the scheme** (dtenwolde, szarnyasg, samansmink, pdet,
 maxxen, tishj, hannes: 7; R2 input check incomplete)
@@ -107,11 +113,16 @@ taniabogatsch: 6; the etag test: pdet, lnkuiper, kryonix: 3; R2 unique flag)
     GETFILESTATUS return `fileId`, so this costs no request.
   - Listed files carry `file_id` in `extended_info`, so opens from a listing still skip GETFILESTATUS.
   - A listed entry with a negative length gets no `etag` (dentiny).
-- Tests (`integration/webhdfs_requests.test`):
-  - The etag section runs with the small-file cache off. It asserts that the warm-up scan opens the files, the repeat
-    sends only the listing, and the scan opens them again with the metadata cache off.
-  - A Parquet file replaced between scans is read again with its new row count.
-  - The same-length, preserved-mtime case needs `setTimes`, which no SQL path can call, so it rests on the tag format.
+- Tests:
+  - `test/cpp` (`version_tag`): two statuses that differ only in `fileId` get different tags, a listing's etag is the
+    handle's tag, a missing `fileId` gives -1, and a negative length gets no etag. The tag is built by
+    `webhdfs::VersionTag` / `ListingEtag`, so that the unit tests reach it.
+  - `integration/webhdfs_requests.test`: the etag section runs with the small-file cache off and pins every request:
+    the warm-up scan, the repeat (only the listing), the scan without the metadata cache, and a Parquet file replaced
+    by one of the same row count (read again with its new values).
+  - The same-length, preserved-mtime case needs `setTimes`, which no SQL path can call; the unit test pins the tag.
+- The guarantee needs a server that reports `fileId`. HDFS NameNodes do; without it the tag falls back to the mtime
+  and length (README).
 - tishj's related point is left open (O10): the Parquet metadata cache is database-wide and keyed by path, so one
   identity's cached row counts and statistics can serve another that may list the directory but not read the file.
 
@@ -141,8 +152,9 @@ taniabogatsch: 6; the etag test: pdet, lnkuiper, kryonix: 3; R2 unique flag)
 - **hawkfish: the upper epoch bound was 1 ms short.** DuckDB's largest TIMESTAMP is `INT64_MAX - 1` µs, so the last
   whole millisecond is `(INT64_MAX - 1) / 1000`. Unit test at the bound and the bound plus 1.
 - **mytherin: `webhdfs_ls` handed the walk a status for another path.** For a path with glob escapes (`a\*b`), the stat
-  was of the raw path but the walk's root is the unescaped one. The status is now handed over only when the two are
-  the same, which is the pre-R2 behaviour for escaped paths. No fixture has such names, so there is no SQL test.
+  was of the raw path but the walk's root is the unescaped one. It now stats the unescaped path, as a glob does, and
+  hands that status over (mytherin, dentiny, tishj in the PR review). Test: `integration/webhdfs_functions.test`
+  lists a file `a*b.csv` and a directory `dir*` by their escaped names.
 - **lnkuiper, tmonster: the cached CSV read counted only OPEN.** The full request list is now pinned (2
   GETFILESTATUS, from core's CSV reader opening by name), so the upstream fix in O6 shows up as a test diff.
 - **carlopi: `webhdfs_httpfs_loading.test` assumed autoloading was off.** It now has `require no_extension_autoloading`.
@@ -261,3 +273,55 @@ hannes's blocking item, O9, is now the top open item and should be fixed togethe
 `HTTPParams` the panel agrees on. What remains is the policy decision for which DataNodes are allowed when external
 access is restricted. Next in line are O1 (`retries = 0` for the exclusive-CREATE leg, once a fault-injection fixture
 exists) and O3.
+
+## PR review loop
+After the PR was opened, the 15 lenses reviewed the PR diff itself (read-only, each with the diff and the code around
+it) until none requested changes. At most 5 iterations; a finding raised again after a fix, or two lenses asking for
+opposite things, would stop the loop and be listed here.
+
+### Iteration 1 (on 462878f)
+- **Verdicts:** request changes 4 (szarnyasg, carlopi, pdet, kryonix); approve with nits 11.
+- **Request changes:**
+  - szarnyasg: the README said a path-scoped secret makes the `webhdfs_namenodes()` columns NULL. That holds only
+    when the secret has its own `NAMENODES`. One without them shows the root's configuration. Fixed: the README and
+    R3-2 now say the columns describe the cluster root and are never a path-scoped secret's, with a test row for that
+    case.
+  - carlopi (also hawkfish, tmonster, lnkuiper, dtenwolde and tishj as nits): no test failed if `fileId` was dropped
+    from the tag. Fixed: the tag moved to `webhdfs::VersionTag`/`ListingEtag` and has a unit test.
+  - pdet, kryonix (also samansmink, mytherin, maxxen, hannes, tishj, dentiny and taniabogatsch as nits): no test
+    reached the file system's directory overrides on the allowed directory itself; the partitioned COPY wrote below
+    it. Fixed with `EXPORT DATABASE` to the allowed directory (kryonix's path). pdet's `COPY ... TO '.../allowed_dir/'`
+    doesn't work: core checks a COPY target as a file and refuses it, slash or not.
+- **Nits fixed:**
+  - every request pinned in the etag section; the replaced file keeps its row count (tmonster, lnkuiper, dentiny,
+    pdet, kryonix);
+  - a duplicate `truncate_duckdb_logs()` (all 15);
+  - `WebHdfsSettings::small_file_cache_size` is gone: a dedicated `LoadSmallFileCacheSize` runs once at load
+    (samansmink, lnkuiper, mytherin, maxxen);
+  - `CreateClient` passes the `FileType` to `CreateParams`, which alone decides to skip HTTPUtil's check, with the rule
+    that params for another URL (O9's DataNode legs) must not take the skip (mytherin, hannes, maxxen, carlopi,
+    samansmink);
+  - `file_id` goes into `extended_info` only when the server sent one (hawkfish, maxxen);
+  - README: the `fileId` guarantee needs a server that reports it; all `webhdfs_namenodes()` columns and every NULL
+    case; the O9 limitation names the man in the middle and the KDC request; which calls treat an allowed directory as
+    accessible (szarnyasg, carlopi, hawkfish, pdet, maxxen, dtenwolde, tishj, taniabogatsch, dentiny);
+  - `TryResolveConfig` also maps `ConversionException` to NULL, and its comment names the caught types and no longer
+    claims a `HADOOP_CONF_DIR` error it can't reach (hannes, pdet, kryonix, dtenwolde);
+  - `webhdfs_ls` stats the unescaped path, with a test (mytherin, dentiny, tishj);
+  - tests: `webhdfs_exists` on the allowed directory, an `allowed_paths` file, the `/test/data2` sibling, the
+    `xattrs(names := [])` request count, and `SCOPE 'webhdfs://'` accepted (tmonster, carlopi, hannes, kryonix,
+    dtenwolde);
+  - comments: the scope rule's rationale, and why extension load can seed the cache size (dtenwolde, lnkuiper).
+- **Declined:**
+  - samansmink: log a warning when a secret is invalid in `TryResolveConfig`. The NULL is documented, and the function
+    has no logging context of its own.
+  - maxxen: gate `webhdfs_namenodes()` only on `enable_external_access`, not the path check. Requests use the path
+    check, so the function follows it; the README documents the NULL.
+  - mytherin: a TSan run of a concurrent `SET` against scans. It stays with the TSan job in O8.
+- **Pre-existing, noted for later:**
+  - carlopi: a persistent secret saved before this PR with `SCOPE 'webhdfs:/'` still loads (deserialization does not
+    validate, so other secrets keep loading). Re-create it.
+  - hannes: `ListFilesExtended("webhdfs:/")` (autocomplete's cluster names) reads secrets and `SiteConfig()` without
+    `CheckAccess` when called outside the VFS.
+  - maxxen: `MoveFile` checks only the source itself; core's VFS checks both, and the target belongs with O9.
+  - lnkuiper: the small-file copies (O7).

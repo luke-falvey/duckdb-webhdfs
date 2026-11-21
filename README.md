@@ -158,7 +158,7 @@ every table function but `webhdfs_namenodes()` starts with the URL it describes:
 | `webhdfs_snapshottable_directories(url)` | Snapshottable directories of the cluster. |
 | `webhdfs_server_defaults(url)` | Cluster defaults: block size, replication, checksum type, trash interval, ... |
 | `webhdfs_home_directory(url)`, `webhdfs_trash_root(url)` | URLs (scalars). |
-| `webhdfs_namenodes()` | Per cluster and NameNode in use by this database: state, request counts, last error, DataNode requests, whether batched listing works; and `auth_mode`, `namenode_source` and `secret_name` as this session would resolve them now for the cluster root (`/`). Those three are NULL on a NameNode that configuration doesn't name: one from a dropped secret, another session's secret, or a secret scoped to a path below the root. |
+| `webhdfs_namenodes()` | One row per cluster and NameNode in use by this database: `endpoint`, `namenode`, `state`, `active`, `requests`, `last_error`, `datanode_requests`, `auth_mode`, `namenode_source`, `secret_name`, `batched_listing`. `auth_mode`, `namenode_source` and `secret_name` are what this session would use now for the cluster root (`/`), not for a path below it: a secret scoped to `webhdfs://nn/data` is not shown, even for the NameNode its requests went to. They are NULL on a NameNode the root's configuration doesn't name (one from a dropped secret, another session's secret or a path-scoped secret's `NAMENODES`), when the access settings refuse the cluster root, and when the secret for it is invalid. |
 
 Missing paths raise an error (except in `webhdfs_exists` and in globs, which match nothing). Permission errors fail
 the query; `skip_permission_errors := true` (or `SET webhdfs_skip_permission_errors = true`) skips unreadable
@@ -222,7 +222,8 @@ listing or for httpfs's timeout; the shell then just offers nothing.
 - DuckDB's external file cache treats `webhdfs://` paths as local files, so it caches them only with
   `SET cache_local_files = true`. WebHDFS files carry a version tag of their inode id (`fileId`), modification time and
   length, so cached data and Parquet metadata are invalidated when a file is replaced, even by one of the same length
-  with its old modification time kept (`distcp -pt`), under `validate_external_file_cache = 'VALIDATE_ALL'` (the
+  with its old modification time kept (`distcp -pt`), when the server reports `fileId` (HDFS NameNodes do; without
+  it, only the modification time and length tell versions apart), under `validate_external_file_cache = 'VALIDATE_ALL'` (the
   default).
   `VALIDATE_REMOTE` treats `webhdfs://` as local and never revalidates it; `NO_VALIDATION` never does either.
 
@@ -255,7 +256,13 @@ listing or for httpfs's timeout; the shell then just offers nothing.
   well as to the NameNode or gateway. Where DataNodes must not see a credential, give it in a `webhdfs` secret
   (`AUTH`, `DELEGATION_TOKEN`) instead: those are sent to the NameNode only.
 - With `enable_external_access = false`, `allowed_directories` and `allowed_paths` are checked against the
-  `webhdfs://` URL, not against the DataNode a NameNode redirects to: the redirect target is the cluster's choice.
+  `webhdfs://` URL, not against the DataNode a NameNode redirects to. A NameNode, or on plain `webhdfs://` anyone who
+  can rewrite its responses, can send a read or write to any host, internal ones included. With Kerberos and
+  `spnego_every_request`, a ticket for that host is requested from the KDC. `swebhdfs://` rules out the man in the
+  middle, not a hostile NameNode, so these settings are no sandbox against the cluster.
+- As in DuckDB, an allowed directory itself (`webhdfs://nn/data` for `allowed_directories = ['webhdfs://nn/data/']`)
+  is accessible to calls on a directory: listing, creating or removing it, and the metadata functions, which check
+  every path as a directory. Opening it as a file is refused.
 - A request whose response is lost is retried by DuckDB. For `DELETE`, the retry then reports "no such file" for a
   file that was deleted; for a write that must not overwrite (`CREATE` without overwrite), it reports that the file
   already exists. Neither leaves wrong data, but the statement fails.

@@ -300,10 +300,10 @@ static string BuildIdentity(DatabaseInstance &db, optional_ptr<FileOpener> opene
 
 WebHdfsClient::WebHdfsClient(DatabaseInstance &db_p, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url_p,
                              WebHdfsConfig config_p, WebHdfsSettings settings_p, WebHdfsEndpoint &endpoint_p,
-                             bool access_checked)
+                             FileType access_type)
     : db(db_p), url(std::move(url_p)), config(std::move(config_p)), settings(std::move(settings_p)),
       endpoint(endpoint_p) {
-	params = WebHdfsHttp::CreateParams(db, opener, url.ToString(), access_checked);
+	params = WebHdfsHttp::CreateParams(db, opener, url.ToString(), access_type);
 	identity = BuildIdentity(db, opener, url, config);
 	endpoint.RecordConfig(config);
 }

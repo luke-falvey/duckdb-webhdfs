@@ -371,8 +371,8 @@ opposite things, would stop the loop and be listed here.
     first); it stays as defensive code for the legacy secret format.
   - pdet: tests for `\\` and a trailing `\`. They matter only if paths are unescaped, which is the open dispute.
 
-### Loop stopped: two lenses want opposite things
-The loop stops here under its safeguard. Iteration 1 asked for one thing and iteration 2 for its opposite:
+### Paused: two lenses wanted opposite things
+The loop paused here under its safeguard. Iteration 1 asked for one thing and iteration 2 for its opposite:
 - mytherin, dentiny and tishj (iteration 1): a path with no glob characters left should be unescaped (`a\*b` names
   `a*b`), as the walk treats it.
 - hawkfish, carlopi, taniabogatsch and pdet (iteration 2): it must name the same file in every function. tmonster and
@@ -384,6 +384,6 @@ DuckDB's local files, and can't traverse. To decide:
 - **B. Unescape everywhere.** Every entry point unescapes, behind the glob compiler's `.`/`..` guard, and the access
   check runs on the unescaped path. It changes what `read_csv('.../a\b.csv')` opens for names with real backslashes.
 
-CI and the local runs pass on the final head. No lens's request-changes finding is left unaddressed apart from this
-choice, and the fixes from iteration 2 have not been re-reviewed by the quorum.
+**Decided by the user: A.** A path with no glob characters names itself, as in DuckDB. A finding that only re-argues
+A against B is declined with a pointer here. The loop then continued with iteration 3, on the iteration-2 fixes.
 

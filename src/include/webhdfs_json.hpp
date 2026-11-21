@@ -97,9 +97,10 @@ struct RemoteException {
 };
 
 //! Range of epoch milliseconds a FileStatus time may have: DuckDB's TIMESTAMP range (290309-12-22 BC to 294247-01-10).
-//! The lower end is not -MAX_EPOCH_MS: DuckDB's smallest TIMESTAMP is a whole day.
+//! The lower end is not -MAX_EPOCH_MS: DuckDB's smallest TIMESTAMP is a whole day. The largest is INT64_MAX - 1 µs
+//! (INT64_MAX is infinity), so its last whole millisecond is (INT64_MAX - 1) / 1000.
 constexpr int64_t MIN_EPOCH_MS = -9223372022400000;
-constexpr int64_t MAX_EPOCH_MS = INT64_MAX / 1000 - 1;
+constexpr int64_t MAX_EPOCH_MS = (INT64_MAX - 1) / 1000;
 
 //! A name the server may return as a pathSuffix: no '/' or NUL, not "." or "..". "" (the listed path is a file) is
 //! valid.
@@ -127,6 +128,12 @@ bool ParseLongResult(const std::string &body, int64_t &out, std::string &error);
 uint16_t ParseOctalPermission(const std::string &text);
 //! bits -> "rwxr-xr-x" (with t/T for the sticky bit)
 std::string FormatPermission(uint16_t permission);
+//! A file's version tag, "<fileId>:<mtime>:<length>" (GetVersionTag, and the etag of a listed file). The fileId is in
+//! it because clients can set the mtime (setTimes, distcp -pt): a replacement of the same length with the old mtime
+//! is still a new inode. A server that sends no fileId gives -1, and then only the mtime and length tell files apart.
+std::string VersionTag(int64_t file_id, int64_t modification_time_ms, uint64_t length);
+//! The etag of a listed entry: its VersionTag. False for a negative length, which opens no handle to compare with.
+bool ListingEtag(const FileStatus &status, std::string &out);
 //! An xattr value in GETXATTRS' hex encoding ("0x" and an even number of hex digits); false for anything else
 bool DecodeHex(const std::string &text, std::string &out);
 

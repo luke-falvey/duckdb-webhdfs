@@ -90,15 +90,19 @@ static void ValidateNameNodes(const Value &namenodes) {
 	}
 }
 
-//! A scope that no webhdfs:// or swebhdfs:// URL can match (e.g. 'hdfs://prod' or 'prod') would leave the secret unused
+//! The scope must name the whole scheme: one no webhdfs:// or swebhdfs:// URL can match ('hdfs://prod', 'prod',
+//! 'WEBHDFS') would leave the secret unused, and a partial one ('webhdfs:/') would apply to every URL by accident.
+//! A scope for every cluster says so explicitly ('webhdfs://'), as for other secret types.
 static void ValidateScope(const string &scope) {
 	auto lower = StringUtil::Lower(scope);
 	for (auto scheme : {"webhdfs://", "swebhdfs://"}) {
-		if (StringUtil::StartsWith(lower, scheme) || StringUtil::StartsWith(scheme, lower)) {
+		if (StringUtil::StartsWith(lower, scheme)) {
 			return;
 		}
 	}
-	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://'", scope);
+	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://' (e.g. "
+	                            "'webhdfs://namenode:9870' for one cluster, 'webhdfs://' for all)",
+	                            scope);
 }
 
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {

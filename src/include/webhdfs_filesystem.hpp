@@ -34,6 +34,8 @@ public:
 	//! File length (readers) or bytes accepted so far (writers)
 	idx_t length = 0;
 	int64_t modification_time_ms = 0;
+	//! The HDFS inode id (fileId; -1 if the server sent none): it changes when a file is replaced
+	int64_t file_id = -1;
 	//! Stream position for Read/Write without a location
 	idx_t position = 0;
 
@@ -71,15 +73,21 @@ public:
 	explicit WebHdfsFileSystem(DatabaseInstance &db);
 	~WebHdfsFileSystem() override;
 
-	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs.
+	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs, and
+	//! PermissionException if the access settings refuse `url`, checked as `access_type` (FILE_TYPE_DIR for calls on
+	//! a directory, which allowed_directories matches with a trailing '/', as core does)
 	shared_ptr<WebHdfsClient> CreateClient(const string &url, optional_ptr<FileOpener> opener,
-	                                       webhdfs::WebHdfsUrl &parsed);
+	                                       webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
-	//! Resize the small-file cache of every cluster in use (webhdfs_small_file_cache_size)
+	//! Resize the small-file cache of every cluster, in use or created later (webhdfs_small_file_cache_size). The
+	//! setting's OnSet hook is the only caller: a client never sets the size itself
 	void SetSmallFileCacheSize(idx_t bytes);
-	//! The configuration a request to endpoint `key` (scheme://authority) would use for the caller of `opener`;
-	//! false if it can't be resolved (e.g. an invalid secret)
+	//! The size at extension load, unless a SET from another connection already reached the hook (which runs before
+	//! the value is stored, so a value read at load could be older than the one it applied)
+	void SeedSmallFileCacheSize(idx_t bytes);
+	//! The configuration a request to the root of endpoint `key` (scheme://authority) would use for the caller of
+	//! `opener`; false if access is refused or it can't be resolved (e.g. an invalid secret)
 	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
@@ -139,8 +147,6 @@ public:
 		return "WebHdfsFileSystem";
 	}
 
-	//! The version tag of a file with this mtime and length (GetVersionTag, and the "etag" of a listed file)
-	static string VersionTag(int64_t modification_time_ms, idx_t length);
 	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime, type and etag travel with it
 	static OpenFileInfo MakeOpenFileInfo(const string &url, const webhdfs::FileStatus &status);
 
@@ -163,6 +169,10 @@ protected:
 	}
 
 private:
+	//! The size every endpoint uses, now and when created (endpoints_lock held)
+	void ApplySmallFileCacheSizeLocked(idx_t bytes);
+	//! disabled_filesystems and the file access settings, checked before any secret lookup, Kerberos or request
+	void CheckAccess(const webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	//! The cluster names offered for "scheme://": secret scopes, hdfs-site.xml nameservices and clusters in use
 	void ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
 	                      const std::function<void(OpenFileInfo &info)> &callback);
@@ -170,6 +180,10 @@ private:
 	DatabaseInstance &db;
 	mutex endpoints_lock;
 	unordered_map<string, unique_ptr<WebHdfsEndpoint>> endpoints;
+	//! The small-file cache size every endpoint uses (guarded by endpoints_lock)
+	idx_t small_file_cache_size = WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE;
+	//! SetSmallFileCacheSize has run (guarded by endpoints_lock)
+	bool small_file_cache_size_set = false;
 	mutex site_lock;
 	bool site_loaded = false;
 	webhdfs::HadoopConfig site;

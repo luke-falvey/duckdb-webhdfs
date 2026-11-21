@@ -1,6 +1,7 @@
 #include "webhdfs_glob.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 namespace webhdfs {
 
@@ -45,8 +46,24 @@ static bool HasUnescaped(const std::string &text, const char *chars) {
 	return false;
 }
 
+//! The characters a pattern gives meaning to (besides `\`, which escapes them). `]`, `}` and `,` mean something only
+//! after an unescaped `[` or `{`
+static constexpr const char *GLOB_SPECIAL_CHARACTERS = "*?[{";
+
 bool HasGlobCharacters(const std::string &text) {
-	return HasUnescaped(text, "*?[{");
+	return HasUnescaped(text, GLOB_SPECIAL_CHARACTERS);
+}
+
+std::string EscapeGlob(const std::string &path) {
+	std::string result;
+	result.reserve(path.size());
+	for (auto c : path) {
+		if (c == '\\' || (c != '\0' && std::strchr(GLOB_SPECIAL_CHARACTERS, c))) {
+			result += '\\';
+		}
+		result += c;
+	}
+	return result;
 }
 
 std::string UnescapeGlob(const std::string &text) {

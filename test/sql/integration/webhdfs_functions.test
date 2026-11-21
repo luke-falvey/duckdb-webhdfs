@@ -41,6 +41,104 @@ webhdfs://localhost:9870/test/data/sub/deep	directory
 webhdfs://localhost:9870/test/data/sub/deep/deeper.csv	file
 webhdfs://localhost:9870/test/data/sub/nested.csv	file
 
+# a path with no glob characters names itself, as in read_* and glob(): a backslash in it is part of the name. An
+# escape only applies in a glob, so a\*b.csv is found by a pattern, and a\*b names a file nobody wrote
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/a*b.csv';
+
+query TT
+SELECT name, type FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a*b.csv');
+----
+a*b.csv	file
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b.csv');
+----
+no such file or directory
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a[*]b.csv');
+----
+a*b.csv
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b*');
+----
+a*b.csv
+
+# a directory with a backslash in its name lists its own children, not those of the name without it (in a directory of
+# its own, so that the patterns above can't match these names)
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/d\x/f.csv';
+
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/dx/g.csv';
+
+query T
+SELECT path FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/d\x');
+----
+webhdfs://localhost:9870/test/out/escape_bs/d\x/f.csv
+
+# in a pattern every backslash escapes the next character: d\x/* is dx/*, and d\\x/* is d\x/*
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/d\x/*');
+----
+g.csv
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/d\\x/*');
+----
+f.csv
+
+# a directory whose name has an escaped glob character, beside one with the character itself
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/e\*x/h.csv';
+
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/e[*]x/i.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/e\*x');
+----
+h.csv
+
+# a file with a backslash in its name is reached by that name from every function
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/a\b.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/a\b.csv');
+----
+a\b.csv
+
+query I
+SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/out/escape_bs/a\b.csv');
+----
+1
+
+query I
+SELECT count(*) FROM glob('webhdfs://localhost:9870/test/out/escape_bs/a\b.csv');
+----
+1
+
+# a directory literally named \.\. is listed as itself, never as its parent (which holds a decoy)
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/dots/\.\./inner.csv';
+
+statement ok
+COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape_bs/dots/decoy.csv';
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape_bs/dots/\.\.');
+----
+inner.csv
+
+# an escaped '..' is not a parent: it doesn't reach /test/data/people.csv
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/sub/\.\./people.csv');
+----
+no such file or directory
+
 query I
 SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data/*.nope');
 ----
@@ -205,6 +303,12 @@ query I
 SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/people.csv', names := [NULL]);
 ----
 0
+
+# ... but the path must exist
+statement error
+SELECT count(*) FROM webhdfs_xattrs('webhdfs://localhost:9870/test/data/missing.csv', names := []);
+----
+no such file or directory
 
 query TT
 SELECT name, storage_types FROM webhdfs_storage_policy('webhdfs://localhost:9870/test');

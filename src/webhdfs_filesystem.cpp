@@ -172,8 +172,16 @@ vector<WebHdfsEndpoint::Snapshot> WebHdfsFileSystem::EndpointSnapshots() {
 void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
 	lock_guard<mutex> guard(endpoints_lock);
 	small_file_cache_size = bytes;
+	small_file_cache_size_set = true;
 	for (auto &entry : endpoints) {
 		entry.second->SetSmallFileCacheSize(bytes);
+	}
+}
+
+void WebHdfsFileSystem::SeedSmallFileCacheSize(idx_t bytes) {
+	lock_guard<mutex> guard(endpoints_lock);
+	if (!small_file_cache_size_set) {
+		small_file_cache_size = bytes;
 	}
 }
 
@@ -219,8 +227,9 @@ bool WebHdfsFileSystem::TryResolveConfig(const string &key, optional_ptr<FileOpe
 	// resolve (InvalidConfigurationException, InvalidInputException, or ConversionException for a mistyped value)
 	// shows as NULL; anything else is an error, as it would be for a request
 	auto &site = SiteConfig();
+	auto settings = WebHdfsSettings::Load(db, opener);
 	try {
-		out = ResolveWebHdfsConfig(db, opener, parsed, site, WebHdfsSettings::Load(db, opener));
+		out = ResolveWebHdfsConfig(db, opener, parsed, site, settings);
 		return true;
 	} catch (InvalidConfigurationException &) {
 		return false;
@@ -318,7 +327,7 @@ unique_ptr<FileHandle> WebHdfsFileSystem::OpenFileExtended(const OpenFileInfo &f
 		throw InternalException("WebHdfsFileSystem: compressed files are opened through the virtual file system");
 	}
 	WebHdfsUrl parsed;
-	auto client = CreateClient(file.path, opener, parsed);
+	auto client = CreateClient(file.path, opener, parsed, FileType::FILE_TYPE_REGULAR);
 	auto handle = make_uniq<WebHdfsFileHandle>(*this, parsed.ToString(), flags, client, parsed.path);
 
 	if (flags.OpenForWriting()) {
@@ -535,7 +544,7 @@ void WebHdfsFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
 
 bool WebHdfsFileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(filename, opener, parsed);
+	auto client = CreateClient(filename, opener, parsed, FileType::FILE_TYPE_REGULAR);
 	FileStatus status;
 	return client->TryGetFileStatus(parsed.path, status) && !status.is_dir;
 }
@@ -613,7 +622,7 @@ void WebHdfsFileSystem::RemoveFile(const string &filename, optional_ptr<FileOpen
 
 bool WebHdfsFileSystem::TryRemoveFile(const string &filename, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(filename, opener, parsed);
+	auto client = CreateClient(filename, opener, parsed, FileType::FILE_TYPE_REGULAR);
 	FileStatus status;
 	if (!client->TryGetFileStatus(parsed.path, status)) {
 		return false;
@@ -626,7 +635,7 @@ bool WebHdfsFileSystem::TryRemoveFile(const string &filename, optional_ptr<FileO
 
 void WebHdfsFileSystem::MoveFile(const string &source, const string &target, optional_ptr<FileOpener> opener) {
 	WebHdfsUrl source_url;
-	auto client = CreateClient(source, opener, source_url);
+	auto client = CreateClient(source, opener, source_url, FileType::FILE_TYPE_REGULAR);
 	WebHdfsUrl target_url;
 	string error;
 	if (!webhdfs::ParseWebHdfsUrl(target, target_url, error)) {
@@ -746,7 +755,7 @@ bool WebHdfsFileSystem::ListFiles(const string &directory, const std::function<v
 
 vector<OpenFileInfo> WebHdfsFileSystem::Glob(const string &path, FileOpener *opener) {
 	WebHdfsUrl parsed;
-	auto client = CreateClient(path, opener, parsed);
+	auto client = CreateClient(path, opener, parsed, FileType::FILE_TYPE_REGULAR);
 	vector<OpenFileInfo> result;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
 		FileStatus status;

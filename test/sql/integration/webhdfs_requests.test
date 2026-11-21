@@ -52,7 +52,8 @@ SET parquet_metadata_cache = true;
 statement ok
 CALL truncate_duckdb_logs();
 
-# the warm-up opens every file once (at the DataNode: the redirects are reused from the first scan)
+# the warm-up opens every file once (count(*) reads only the footer; at the DataNode, as the redirects are reused from
+# the first scan)
 statement ok
 SELECT count(*) FROM read_parquet('webhdfs://localhost:9870/test/hive/year=2023/month=*/*.parquet');
 
@@ -160,7 +161,8 @@ CALL truncate_duckdb_logs();
 statement ok
 SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
 
-# no OPEN; DuckDB's CSV reader opens the file by name twice (sniff, scan), so each open costs a GETFILESTATUS
+# no OPEN; DuckDB's CSV reader opens the file by name twice (sniff, scan), so each open costs a GETFILESTATUS (O6: this
+# drops once core keeps the listing's extended_info for CSV opens)
 query TTI
 FROM ops();
 ----
@@ -185,6 +187,18 @@ query TTI
 FROM ops() WHERE op = 'OPEN';
 ----
 OPEN	false	1
+
+# ... and RESET turned it back on: the file read just now is cached again
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
+
+query I
+SELECT count(*) FROM ops() WHERE op = 'OPEN';
+----
+0
 
 # SET to NULL means the default, as RESET does: the cache is on again
 statement ok

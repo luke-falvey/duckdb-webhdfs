@@ -152,9 +152,11 @@ taniabogatsch: 6; the etag test: pdet, lnkuiper, kryonix: 3; R2 unique flag)
 - **hawkfish: the upper epoch bound was 1 ms short.** DuckDB's largest TIMESTAMP is `INT64_MAX - 1` µs, so the last
   whole millisecond is `(INT64_MAX - 1) / 1000`. Unit test at the bound and the bound plus 1.
 - **mytherin: `webhdfs_ls` handed the walk a status for another path.** For a path with glob escapes (`a\*b`), the stat
-  was of the raw path but the walk's root is the unescaped one. It now stats the unescaped path, as a glob does, and
-  hands that status over (mytherin, dentiny, tishj in the PR review). Test: `integration/webhdfs_functions.test`
-  lists a file `a*b.csv` and a directory `dir*` by their escaped names.
+  was of the raw path but the walk's root is the unescaped one. The status is handed over only when the two are the
+  same path. A path with no glob characters keeps naming itself, backslashes included, as in `read_*` and `glob()`.
+  (The PR review loop tried unescaping it instead and reverted that; see the dispute there.) Tests:
+  `integration/webhdfs_functions.test` (`a*b.csv` reached by patterns, `a\*b.csv` not found, an escaped `..` not a
+  parent) and `webhdfs_read.test` (an escaped `..` stays inside the allowed directory).
 - **lnkuiper, tmonster: the cached CSV read counted only OPEN.** The full request list is now pinned (2
   GETFILESTATUS, from core's CSV reader opening by name), so the upstream fix in O6 shows up as a test diff.
 - **carlopi: `webhdfs_httpfs_loading.test` assumed autoloading was off.** It now has `require no_extension_autoloading`.
@@ -325,3 +327,63 @@ opposite things, would stop the loop and be listed here.
     `CheckAccess` when called outside the VFS.
   - maxxen: `MoveFile` checks only the source itself; core's VFS checks both, and the target belongs with O9.
   - lnkuiper: the small-file copies (O7).
+
+### Iteration 2 (on 6ce6d3b)
+- **Verdicts:** request changes 9 (hannes, pdet, hawkfish, kryonix, tishj, dtenwolde, taniabogatsch, samansmink,
+  maxxen); approve with nits 6 (szarnyasg, mytherin, carlopi, dentiny, lnkuiper, tmonster).
+- **Request changes, all on one iteration-1 change.** Iteration 1 made `webhdfs_ls` stat the unescaped form of a path
+  with no glob characters. Two problems:
+  - Access bypass (hannes, pdet, kryonix, tishj, dtenwolde, samansmink, maxxen). The access check saw
+    `.../data/\.\./x`, but the request went out for `.../data/../x`. A server that folds `..` would answer for a
+    path outside `allowed_directories`, and the glob compiler's guard against exactly this never ran.
+  - Semantics (hawkfish, carlopi, taniabogatsch, lnkuiper, tmonster). `read_*`, `glob()` and every other function
+    still take such a path literally, so one URL named two files depending on the function. A real backslash in a
+    name could no longer be listed.
+  - Done: reverted to the raw-path stat, with the status handed to the walk only when the paths are equal. Tests: an
+    escaped `..` doesn't reach outside the allowed directory or a parent; `a\*b.csv` is not found; patterns
+    (`a*b.csv`, `a[*]b.csv`, `a\*b*`) find `a*b.csv`. The README states the rule.
+- **Nits fixed:**
+  - extension load seeds the cache size only if no `SET` reached the hook first (mytherin, dentiny, samansmink,
+    maxxen);
+  - `CreateClient` takes the access type with no default (mytherin);
+  - `webhdfs_checksum` and `webhdfs_block_locations` check as a file, with a checksum test under the access settings
+    (tmonster, pdet);
+  - a `D_ASSERT` in `DataNodeCall` that a skipped check only covers the checked URL (taniabogatsch, hannes, maxxen);
+  - a negative `fileId` reads as -1 everywhere (lnkuiper);
+  - `WebHdfsSettings::Load` outside the narrowed catch (carlopi);
+  - the scope error names an example;
+  - README:
+    - the SCOPE case rule;
+    - the SPNEGO wording, without the internal flag name;
+    - the `fileId` sentence split, with the in-place change that keeps its tag;
+    - which functions ask about the cluster;
+    - the escape rule (szarnyasg, dentiny, samansmink, lnkuiper, hawkfish);
+  - tests:
+    - RESET turns the cache back on (taniabogatsch);
+    - an allowed cluster root still resolves in `webhdfs_namenodes()` with access off (tmonster);
+    - comments on the parent test, the footer-only OPEN count and the O6 CSV count (szarnyasg, tmonster, dentiny).
+- **Declined:**
+  - hawkfish: a unit test that the epoch bounds give finite timestamps. The unit tests build without DuckDB, and the
+    parser bound they pin is the one that matters.
+  - maxxen, mytherin: a named "already checked" input instead of the `FileType`. The required `FileType` and the
+    `D_ASSERT` keep the skip to the checked URL.
+  - carlopi, taniabogatsch: a test of the `ConversionException` catch. No SQL path reaches it (`CREATE SECRET` casts
+    first); it stays as defensive code for the legacy secret format.
+  - pdet: tests for `\\` and a trailing `\`. They matter only if paths are unescaped, which is the open dispute.
+
+### Loop stopped: two lenses want opposite things
+The loop stops here under its safeguard. Iteration 1 asked for one thing and iteration 2 for its opposite:
+- mytherin, dentiny and tishj (iteration 1): a path with no glob characters left should be unescaped (`a\*b` names
+  `a*b`), as the walk treats it.
+- hawkfish, carlopi, taniabogatsch and pdet (iteration 2): it must name the same file in every function. tmonster and
+  lnkuiper would get there by unescaping in `read_*`, `glob()` and every metadata function as well.
+
+The PR keeps the behaviour before round 3: such a path names itself. That is consistent across functions, matches
+DuckDB's local files, and can't traverse. To decide:
+- **A. Keep it** (the PR as it stands). The README tells users to reach `a*b` with a pattern such as `a[*]b`.
+- **B. Unescape everywhere.** Every entry point unescapes, behind the glob compiler's `.`/`..` guard, and the access
+  check runs on the unescaped path. It changes what `read_csv('.../a\b.csv')` opens for names with real backslashes.
+
+CI and the local runs pass on the final head. No lens's request-changes finding is left unaddressed apart from this
+choice, and the fixes from iteration 2 have not been re-reviewed by the quorum.
+

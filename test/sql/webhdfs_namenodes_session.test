@@ -50,13 +50,18 @@ SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes(
 ----
 localhost:7	simple	url	NULL
 
-# when the access settings refuse the cluster root (only a directory below it is allowed, or file access is off), the
-# function reads no secrets or Hadoop configuration for it (keep this last)
+# with file access off, an allowed cluster root still resolves; one only a directory below is allowed for doesn't, and
+# the function then reads no secrets or Hadoop configuration for it (keep this last)
 statement ok
-SET allowed_directories = ['webhdfs://127.0.0.3/data/'];
+SET allowed_directories = ['webhdfs://127.0.0.3/data/', 'webhdfs://localhost:7/'];
 
 statement ok
 SET enable_external_access = false;
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:7';
+----
+localhost:7	simple	url	NULL
 
 query TTTT
 SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://127.0.0.3';

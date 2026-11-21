@@ -77,13 +77,15 @@ public:
 	//! PermissionException if the access settings refuse `url`, checked as `access_type` (FILE_TYPE_DIR for calls on
 	//! a directory, which allowed_directories matches with a trailing '/', as core does)
 	shared_ptr<WebHdfsClient> CreateClient(const string &url, optional_ptr<FileOpener> opener,
-	                                       webhdfs::WebHdfsUrl &parsed,
-	                                       FileType access_type = FileType::FILE_TYPE_REGULAR);
+	                                       webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
 	//! Resize the small-file cache of every cluster, in use or created later (webhdfs_small_file_cache_size). The
-	//! setting's OnSet hook and extension load are the only callers: a client never sets the size itself
+	//! setting's OnSet hook is the only caller: a client never sets the size itself
 	void SetSmallFileCacheSize(idx_t bytes);
+	//! The size at extension load, unless a SET from another connection already reached the hook (which runs before
+	//! the value is stored, so a value read at load could be older than the one it applied)
+	void SeedSmallFileCacheSize(idx_t bytes);
 	//! The configuration a request to the root of endpoint `key` (scheme://authority) would use for the caller of
 	//! `opener`; false if access is refused or it can't be resolved (e.g. an invalid secret)
 	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
@@ -178,6 +180,8 @@ private:
 	unordered_map<string, unique_ptr<WebHdfsEndpoint>> endpoints;
 	//! The small-file cache size every endpoint uses (guarded by endpoints_lock)
 	idx_t small_file_cache_size = WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE;
+	//! SetSmallFileCacheSize has run (guarded by endpoints_lock)
+	bool small_file_cache_size_set = false;
 	mutex site_lock;
 	bool site_loaded = false;
 	webhdfs::HadoopConfig site;

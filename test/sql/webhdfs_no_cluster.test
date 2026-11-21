@@ -250,7 +250,7 @@ SCOPE 'hdfs://prod' must start with 'webhdfs://' or 'swebhdfs://'
 statement error
 CREATE SECRET bad_scope (TYPE webhdfs, SCOPE ['webhdfs://ok', 'prod']);
 ----
-SCOPE 'prod' must start with 'webhdfs://' or 'swebhdfs://'
+SCOPE 'prod' must start with 'webhdfs://' or 'swebhdfs://' (e.g. 'webhdfs://namenode:9870' for one cluster, 'webhdfs://' for all)
 
 # the whole scheme is required: 'webhdfs:/' would match every webhdfs:// URL, 'WEBHDFS' and 'w' none
 statement error

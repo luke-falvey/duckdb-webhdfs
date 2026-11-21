@@ -380,13 +380,25 @@ SELECT count(*) FROM webhdfs_stat('webhdfs://localhost:9870/test/order/a.csv');
 ----
 1
 
+# an escaped '..' is part of a name, never a parent: it doesn't reach outside the allowed directory
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/\.\./order/a.csv');
+----
+no such file or directory
+
+# file contents (checksum, block locations) are checked as a file; the checksum's DataNode leg works under the check
+query I
+SELECT count(*) FROM webhdfs_checksum('webhdfs://localhost:9870/test/data/people.csv');
+----
+1
+
 # a sibling whose name starts with the allowed directory's is not inside it
 statement error
 SELECT webhdfs_exists('webhdfs://localhost:9870/test/data2');
 ----
 disabled by configuration
 
-# ... but not its parent
+# nor its parent
 statement error
 SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test');
 ----

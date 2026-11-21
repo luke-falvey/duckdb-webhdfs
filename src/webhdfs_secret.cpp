@@ -100,7 +100,9 @@ static void ValidateScope(const string &scope) {
 			return;
 		}
 	}
-	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://'", scope);
+	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://' (e.g. "
+	                            "'webhdfs://namenode:9870' for one cluster, 'webhdfs://' for all)",
+	                            scope);
 }
 
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {

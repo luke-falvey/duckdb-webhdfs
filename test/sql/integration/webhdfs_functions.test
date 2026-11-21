@@ -41,22 +41,36 @@ webhdfs://localhost:9870/test/data/sub/deep	directory
 webhdfs://localhost:9870/test/data/sub/deep/deeper.csv	file
 webhdfs://localhost:9870/test/data/sub/nested.csv	file
 
-# a glob escape names the character itself, also in a path with no glob characters left: a\*b is the entry a*b
+# a path with no glob characters names itself, as in read_* and glob(): a backslash in it is part of the name. An
+# escape only applies in a glob, so a\*b.csv is found by a pattern, and a\*b names a file nobody wrote
 statement ok
 COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/a*b.csv';
 
-statement ok
-COPY (SELECT 1 AS x) TO 'webhdfs://localhost:9870/test/out/escape/dir*/x.csv';
-
 query TT
-SELECT name, type FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b.csv');
+SELECT name, type FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a*b.csv');
 ----
 a*b.csv	file
 
-query T
-SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/dir\*');
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b.csv');
 ----
-x.csv
+no such file or directory
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a[*]b.csv');
+----
+a*b.csv
+
+query T
+SELECT name FROM webhdfs_ls('webhdfs://localhost:9870/test/out/escape/a\*b*');
+----
+a*b.csv
+
+# an escaped '..' is not a parent: it doesn't reach /test/data/people.csv
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:9870/test/data/sub/\.\./people.csv');
+----
+no such file or directory
 
 query I
 SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test/data/*.nope');

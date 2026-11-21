@@ -26,6 +26,9 @@ SELECT path, size, owner FROM webhdfs_ls('webhdfs://namenode:9870/data/**') ORDE
   `.crc` files) are skipped unless named. Listings are paged (`LISTSTATUS_BATCH`) and run in parallel, and the files a
   glob expands to (for `read_*` and `glob()`) come back sorted by full path (byte order), however many listings run at
   once. `webhdfs_ls`, which also returns directories, has no defined row order: use `ORDER BY`.
+  In a pattern, a backslash escapes a glob character (`a\*b*` matches names that start with `a*b`). A path with no
+  glob characters left names itself, backslashes included, as in DuckDB: to reach the file `a*b`, use a pattern such
+  as `a[*]b`.
 - Several clusters in one query, each with its own credentials; HA NameNode lists with failover, from a secret or from
   `hdfs-site.xml`.
 - Authentication: Hadoop simple auth (`user.name`), proxy users (`doas`), delegation tokens, Kerberos (SPNEGO, using
@@ -78,10 +81,10 @@ Options:
 | `PERMISSION`, `REPLICATION`, `BLOCK_SIZE` | Options for files created by writes (octal string, BIGINT, BIGINT). |
 
 `CREATE SECRET` checks the `AUTH` value and its combination with `DELEGATION_TOKEN`, that each `NAMENODES` entry is
-`host:port`, that `REPLICATION` (1 to 32767) and `BLOCK_SIZE` are positive, and that each `SCOPE` starts with
-`webhdfs://` or `swebhdfs://` (the whole scheme: `'webhdfs:/'` or `'WEBHDFS'` is an error), so those mistakes fail
-when the secret is created, not on first use. `PERMISSION` and
-`GATEWAY_PATH` are passed to the server as given.
+`host:port`, that `REPLICATION` (1 to 32767) and `BLOCK_SIZE` are positive, and that each `SCOPE` starts with the
+whole `webhdfs://` or `swebhdfs://` in any case (`'webhdfs:/'` or a bare `'WEBHDFS'` is an error; `'webhdfs://'` is
+every cluster), so those mistakes fail when the secret is created, not on first use. `PERMISSION` and `GATEWAY_PATH`
+are passed to the server as given.
 
 State kept per cluster (Kerberos delegation tokens, reused DataNode redirects, the small-file cache) is kept per
 identity: auth mode, user, proxy user, Kerberos principal and `http` secret. Two secrets for the same cluster with
@@ -221,10 +224,11 @@ listing or for httpfs's timeout; the shell then just offers nothing.
   many small files. See [test/bench](test/bench/README.md) for numbers.
 - DuckDB's external file cache treats `webhdfs://` paths as local files, so it caches them only with
   `SET cache_local_files = true`. WebHDFS files carry a version tag of their inode id (`fileId`), modification time and
-  length, so cached data and Parquet metadata are invalidated when a file is replaced, even by one of the same length
-  with its old modification time kept (`distcp -pt`), when the server reports `fileId` (HDFS NameNodes do; without
-  it, only the modification time and length tell versions apart), under `validate_external_file_cache = 'VALIDATE_ALL'` (the
-  default).
+  length, so under `validate_external_file_cache = 'VALIDATE_ALL'` (the default) cached data and Parquet metadata are
+  invalidated when a file is replaced (a new inode: overwrite, rename, `distcp`), even by one of the same length with
+  its old modification time kept (`distcp -pt`). This needs a server that reports `fileId`; HDFS NameNodes do.
+  Without it, only the modification time and length tell versions apart. A file changed in place (truncated and
+  appended to the same length, then its mtime set back) keeps its tag.
   `VALIDATE_REMOTE` treats `webhdfs://` as local and never revalidates it; `NO_VALIDATION` never does either.
 
 ## Limitations
@@ -257,12 +261,15 @@ listing or for httpfs's timeout; the shell then just offers nothing.
   (`AUTH`, `DELEGATION_TOKEN`) instead: those are sent to the NameNode only.
 - With `enable_external_access = false`, `allowed_directories` and `allowed_paths` are checked against the
   `webhdfs://` URL, not against the DataNode a NameNode redirects to. A NameNode, or on plain `webhdfs://` anyone who
-  can rewrite its responses, can send a read or write to any host, internal ones included. With Kerberos and
-  `spnego_every_request`, a ticket for that host is requested from the KDC. `swebhdfs://` rules out the man in the
+  can rewrite its responses, can send a read or write to any host, internal ones included. With Kerberos against a
+  cluster that issues no delegation tokens (requests then authenticate with SPNEGO each time), a ticket for that host
+  is requested from the KDC. `swebhdfs://` rules out the man in the
   middle, not a hostile NameNode, so these settings are no sandbox against the cluster.
 - As in DuckDB, an allowed directory itself (`webhdfs://nn/data` for `allowed_directories = ['webhdfs://nn/data/']`)
   is accessible to calls on a directory: listing, creating or removing it, and the metadata functions, which check
-  every path as a directory. Opening it as a file is refused.
+  every path as a directory. Opening it as a file is refused, and so are `webhdfs_checksum` and
+  `webhdfs_block_locations`, which describe a file's contents. `webhdfs_home_directory`, `webhdfs_trash_root`,
+  `webhdfs_server_defaults` and `webhdfs_snapshottable_directories` ask about the cluster, whatever path is given.
 - A request whose response is lost is retried by DuckDB. For `DELETE`, the retry then reports "no such file" for a
   file that was deleted; for a write that must not overwrite (`CREATE` without overwrite), it reports that the file
   already exists. Neither leaves wrong data, but the statement fails.

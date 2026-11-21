@@ -198,9 +198,10 @@ struct MetaCall {
 	string url;
 	const named_argument_map_t &named;
 
-	//! The functions take a file or a directory: checked as a directory, the allowed directory itself is accessible
-	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed) {
-		return fs.CreateClient(url, ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
+	//! Most functions take a file or a directory: checked as a directory, the allowed directory itself is accessible.
+	//! Those that only describe a file's contents (checksum, block locations) check it as a file.
+	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed, FileType access_type = FileType::FILE_TYPE_DIR) {
+		return fs.CreateClient(url, ContextOpener(context), parsed, access_type);
 	}
 	bool NamedBool(const char *name, bool default_value) const {
 		for (auto &entry : named) {
@@ -247,13 +248,15 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	FileStatus status;
 	optional_ptr<const FileStatus> root_status;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
-		// a\*b names the file a*b, as it does in a glob: stat the path the walk would list
-		auto literal = webhdfs::UnescapeGlob(parsed.path);
-		status = client->GetFileStatus(literal);
+		// a path with no glob characters names itself, backslashes included, as in read_* and glob(): stat it as is.
+		// The walk's root has its escapes removed, so it only gets this status when that is the same path
+		status = client->GetFileStatus(parsed.path);
 		if (!status.is_dir) {
-			return SingleRow(EntryRow(client->UrlFor(literal), literal, status));
+			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
-		root_status = &status;
+		if (webhdfs::UnescapeGlob(parsed.path) == parsed.path) {
+			root_status = &status;
+		}
 	}
 	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));
@@ -311,7 +314,7 @@ static unique_ptr<RowSource> MakeQuotaUsage(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_REGULAR);
 	auto offset_value = call.Named("offset");
 	auto length_value = call.Named("length");
 	int64_t offset = offset_value.IsNull() ? 0 : offset_value.GetValue<int64_t>();
@@ -370,7 +373,7 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_REGULAR);
 	auto doc = ParseJson(client->GetJsonViaDataNode("GETFILECHECKSUM", parsed.path), "GETFILECHECKSUM");
 	auto checksum = doc->Root()["FileChecksum"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), Value(checksum["algorithm"].GetString()),

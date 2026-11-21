@@ -25,8 +25,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// registered first: the settings hook keeps a reference, which is only safe once the VFS owns the filesystem
 	db.GetFileSystem().RegisterSubSystem(std::move(webhdfs_fs));
 	WebHdfsSettings::Register(db, [&fs_ref](idx_t bytes) { fs_ref.SetSmallFileCacheSize(bytes); });
-	// load runs before any SET can reach the hook, so this and OnSet never race
-	fs_ref.SetSmallFileCacheSize(WebHdfsSettings::LoadSmallFileCacheSize(db));
+	// a SET from another connection may reach the hook first: the seed then leaves its value alone
+	fs_ref.SeedSmallFileCacheSize(WebHdfsSettings::LoadSmallFileCacheSize(db));
 	RegisterWebHdfsSecretType(loader);
 	RegisterWebHdfsFunctions(loader, fs_ref);
 }

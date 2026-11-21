@@ -441,6 +441,10 @@ TEST(version_tag) {
 	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5}})", a, error));
 	CHECK(ListingEtag(a, tag_a));
 	CHECK_EQ(tag_a, std::string("-1:5:3"));
+	// a negative fileId is no id either
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":-5}})", a, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
 	// a negative length has no etag
 	a.length = -1;
 	CHECK(!ListingEtag(a, tag_a));

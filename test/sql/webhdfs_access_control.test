@@ -31,7 +31,13 @@ SELECT webhdfs_home_directory('webhdfs://localhost:1');
 ----
 Cannot access "webhdfs://localhost:1/" - file system operations are disabled by configuration
 
-# an allowed directory is not a file: calls about a file's contents check the path as one and refuse it
+# the allowed directory itself passes the check for a call on a directory (it then fails for another reason) ...
+statement error
+SELECT * FROM webhdfs_stat('webhdfs://localhost:1/data');
+----
+<!REGEX>:.*Cannot access.*
+
+# ... but it is not a file: calls about a file's contents check the path as one and refuse it
 statement error
 SELECT * FROM webhdfs_checksum('webhdfs://localhost:1/data');
 ----

@@ -373,7 +373,8 @@ opposite things, would stop the loop and be listed here.
     choice explicit at every call site; iteration 3 made the `D_ASSERT` say what holds.
   - carlopi, taniabogatsch: a test of the `ConversionException` catch. No SQL path reaches it (`CREATE SECRET` casts
     first); it stays as defensive code for the legacy secret format.
-  - pdet: tests for `\\` and a trailing `\`. They matter only if paths are unescaped, which is the open dispute.
+  - pdet: tests for `\\` and a trailing `\`. Declined then as mattering only if paths were unescaped; iteration 3 made
+    the walk escape every literal directory, and iteration 4 added these cases to the unit test.
 
 ### Paused: two lenses wanted opposite things
 The loop paused here under its safeguard. Iteration 1 asked for one thing and iteration 2 for its opposite:
@@ -389,7 +390,7 @@ not "as in DuckDB". And `webhdfs_ls` on a directory did not yet follow the rule.
 - **B. Unescape everywhere.** Every entry point unescapes, behind the glob compiler's `.`/`..` guard, and the access
   check runs on the unescaped path. It changes what `read_csv('.../a\b.csv')` opens for names with real backslashes.
 
-**Decided by the user: A.** A path with no glob characters names itself. A finding that only re-argues
+**Decided by the user: A.** A path with no unescaped glob characters names itself. A finding that only re-argues
 A against B is declined with a pointer here. The loop then continued with iteration 3, on the iteration-2 fixes.
 
 ### Iteration 3 (on 9aea5f4 + ceefb75)
@@ -397,8 +398,9 @@ A against B is declined with a pointer here. The loop then continued with iterat
 - **Request changes, all on one finding (all 15).** Under A, `webhdfs_ls` on a directory still did not name itself.
   It stat'ed `x\y` but handed the same string to the walk, whose compiler unescapes the root. So it listed `xy`: zero
   rows, another directory, or a path the access check never saw.
-  - Fixed: the walk gets `EscapeGlob(path)`, whose root is exactly the path, and always the stat'ed status. That is
-    one GETFILESTATUS, for the checked path.
+  - Fixed: the walk gets `EscapeGlob(path)`, whose root is the same (normalised) directory, and always the stat'ed
+    status. That is one GETFILESTATUS, for the checked path. It holds because an escaped path always compiles to a
+    literal, which `glob_escape_literal` pins.
   - Tests: a directory `d\x` beside a decoy `dx`; a directory named `\.\.`; a file `a\b.csv` reached by
     `webhdfs_ls`, `read_csv` and `glob()`; the escape round-trip and the `..` guard in `test/cpp`.
 - **Also raised by several and fixed:**
@@ -420,4 +422,39 @@ A against B is declined with a pointer here. The loop then continued with iterat
   - tmonster: a separate request-count pin for a backslash directory. The pinned `webhdfs_ls` of a plain directory
     (one GETFILESTATUS) goes through the same code.
   - Nothing re-argued A against B.
+
+### Iteration 4 (on c9accc9)
+- **Verdicts:** approve with nits 15; request changes 0. The loop ends here.
+- **Nits fixed:**
+  - The DataNode-leg invariant throws an `InternalException` in every build, not a debug-only `D_ASSERT`: it guards
+    an access check (carlopi, maxxen, dentiny, dtenwolde, hannes, mytherin, kryonix, tishj, lnkuiper).
+  - `webhdfs_access_control.test` has a positive control: `webhdfs_stat` on the allowed directory gets past the check
+    while checksum and block locations are refused (carlopi, samansmink, hannes, lnkuiper, kryonix, tishj, pdet,
+    taniabogatsch, szarnyasg, hawkfish, tmonster).
+  - `glob_escape_literal` covers a trailing `\`, `\` before `/` and a doubled `\\`, and the iteration-2 decline of
+    those tests is corrected (tmonster, pdet, tishj, szarnyasg, hawkfish).
+  - The backslash fixtures moved to their own directory, so the earlier `a*b.csv` pattern can't match `a\b.csv` (lnkuiper,
+    kryonix).
+  - More pins:
+    - the child path of `d\x`;
+    - `d\x/*` and `d\\x/*` as patterns (tmonster, taniabogatsch, szarnyasg);
+    - a directory `e\*x` beside `e[*]x` (dtenwolde);
+    - a decoy beside `\.\.` (hawkfish).
+  - README: in a pattern every backslash escapes the next character; `file_id` is NULL for a missing or 0 id, with
+    PLAN updated (samansmink, dentiny, pdet, szarnyasg, hawkfish, taniabogatsch).
+  - One glob-character constant shared by `HasGlobCharacters` and `EscapeGlob` (maxxen); one locked helper for both
+    cache-size paths (dtenwolde, hawkfish, mytherin); comments on why the escaped literal always compiles and that
+    the seed's endpoint branch can't be tested (carlopi, dentiny, mytherin, samansmink, taniabogatsch).
+- **Declined:**
+  - maxxen: a typed literal entry point (`GlobPattern::Literal`) in place of escaping. It is a fair follow-up, and the
+    round trip is pinned by a unit test.
+  - maxxen: cleanup of the escape fixtures between runs. `webhdfs_up.sh` wipes `/test`, and the fixtures now live in
+    their own directory.
+  - Nothing re-argued A against B.
+
+### Outcome
+Four iterations. Request changes: 4, 9, 15, then 0. Iteration 2 reversed an iteration-1 change that opened an access
+bypass. Its follow-up question, whether literal paths unescape, went to the user, who chose A. Iteration 3 found that
+A was not yet applied to directories in `webhdfs_ls`, and fixed it. No finding recurred after its fix, and no new
+conflict arose after the user's decision.
 

@@ -262,7 +262,8 @@ TEST(glob_hidden_rules) {
 
 TEST(glob_escape_literal) {
 	// an escaped path compiles to itself: a literal whose root is exactly that path
-	for (std::string path : {"/t/x\\y", "/t/a*b", "/t/\\.\\./c", "/t/{a,b}/[x]?", "/plain/path"}) {
+	for (std::string path :
+	     {"/t/x\\y", "/t/a*b", "/t/\\.\\./c", "/t/{a,b}/[x]?", "/plain/path", "/t/x\\", "/t/x\\/c", "/t/a\\\\b"}) {
 		auto pattern = GlobPattern::Compile(EscapeGlob(path), false);
 		CHECK(pattern.IsLiteral());
 		CHECK_EQ(pattern.Root(), path);
@@ -461,6 +462,7 @@ TEST(version_tag) {
 	CHECK_EQ(tag_a, std::string("-1:5:3"));
 	// a negative or zero fileId is no id either
 	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":0}})", a, error));
+	CHECK_EQ(a.file_id, int64_t(-1));
 	CHECK(ListingEtag(a, tag_a));
 	CHECK_EQ(tag_a, std::string("-1:5:3"));
 	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":-5}})", a, error));

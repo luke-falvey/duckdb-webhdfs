@@ -169,24 +169,25 @@ vector<WebHdfsEndpoint::Snapshot> WebHdfsFileSystem::EndpointSnapshots() {
 	return result;
 }
 
-void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
-	lock_guard<mutex> guard(endpoints_lock);
+void WebHdfsFileSystem::ApplySmallFileCacheSizeLocked(idx_t bytes) {
 	small_file_cache_size = bytes;
-	small_file_cache_size_set = true;
 	for (auto &entry : endpoints) {
 		entry.second->SetSmallFileCacheSize(bytes);
 	}
 }
 
+void WebHdfsFileSystem::SetSmallFileCacheSize(idx_t bytes) {
+	lock_guard<mutex> guard(endpoints_lock);
+	small_file_cache_size_set = true;
+	ApplySmallFileCacheSizeLocked(bytes);
+}
+
 void WebHdfsFileSystem::SeedSmallFileCacheSize(idx_t bytes) {
 	lock_guard<mutex> guard(endpoints_lock);
-	if (small_file_cache_size_set) {
-		return;
-	}
-	small_file_cache_size = bytes;
-	// another connection may already have opened a cluster while the extension was loading
-	for (auto &entry : endpoints) {
-		entry.second->SetSmallFileCacheSize(bytes);
+	if (!small_file_cache_size_set) {
+		// existing endpoints too: another connection may have opened a cluster while the extension was loading. No
+		// test can time that window; it shares the code SET uses
+		ApplySmallFileCacheSizeLocked(bytes);
 	}
 }
 

@@ -525,8 +525,10 @@ WebHdfsHttpResult WebHdfsClient::DataNodeCall(RequestType type, const string &re
 		headers = SpnegoHeaders(request_url);
 	}
 	// only file clients reach a DataNode: a directory client skips HTTPUtil's check (see WebHdfsHttp::CreateParams),
-	// and a DataNode leg must never inherit that
-	D_ASSERT(!params->skip_external_access_check);
+	// and a DataNode leg must never inherit that, in any build
+	if (params->skip_external_access_check) {
+		throw InternalException("WebHDFS: a DataNode request from a client whose access check is skipped");
+	}
 	endpoint.RecordDataNodeRequest();
 	return Send(type, request_url, headers, data, len, sink);
 }

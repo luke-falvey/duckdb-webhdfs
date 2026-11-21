@@ -26,7 +26,8 @@ SELECT path, size, owner FROM webhdfs_ls('webhdfs://namenode:9870/data/**') ORDE
   `.crc` files) are skipped unless named. Listings are paged (`LISTSTATUS_BATCH`) and run in parallel, and the files a
   glob expands to (for `read_*` and `glob()`) come back sorted by full path (byte order), however many listings run at
   once. `webhdfs_ls`, which also returns directories, has no defined row order: use `ORDER BY`.
-  In a pattern, a backslash escapes a glob character (`a\*b*` matches names that start with `a*b`). A path with no
+  In a pattern, a backslash escapes the next character (`a\*b*` matches names that start with `a*b`; write `d\\x/*` for
+  the children of a directory named `d\x`). A path with no
   unescaped glob characters is taken literally, backslashes included, in every function: `webhdfs_ls('.../a\b')` lists
   the directory named `a\b`. Unlike DuckDB's local files, `a\*b` on its own is therefore the name `a\*b`; to reach the
   file `a*b`, use a pattern such as `a[*]b`.
@@ -148,7 +149,7 @@ every table function but `webhdfs_namenodes()` starts with the URL it describes:
 
 | Function | Returns |
 |---|---|
-| `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)` | A directory's children, a glob's matches (directories included), or a file itself. Columns: `path`, `name`, `type`, `size`, `owner`, `group`, `permissions` (`rw-r--r--`), `mode`, `replication`, `block_size`, `last_modified`, `last_accessed`, `file_id`, `children_num`, `storage_policy`, `ec_policy`. `last_modified` and `last_accessed` are `TIMESTAMP WITH TIME ZONE`; `last_accessed` is NULL for directories and when the NameNode doesn't track access times. |
+| `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)` | A directory's children, a glob's matches (directories included), or a file itself. Columns: `path`, `name`, `type`, `size`, `owner`, `group`, `permissions` (`rw-r--r--`), `mode`, `replication`, `block_size`, `last_modified`, `last_accessed`, `file_id`, `children_num`, `storage_policy`, `ec_policy`. `last_modified` and `last_accessed` are `TIMESTAMP WITH TIME ZONE`; `last_accessed` is NULL for directories and when the NameNode doesn't track access times; `file_id` is NULL when the server sends no inode id (or 0, HDFS's "unknown"). |
 | `webhdfs_stat(url)` | The same columns for one path. |
 | `webhdfs_exists(url)` | `BOOLEAN` (scalar). |
 | `webhdfs_content_summary(url)` | Recursive totals: `length`, `file_count`, `directory_count`, `space_consumed`, `quota`, `space_quota`, `erasure_coding_policy`. |

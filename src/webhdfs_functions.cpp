@@ -254,7 +254,8 @@ static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 		if (!status.is_dir) {
 			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
-		// the walk takes a pattern: escape the path so that its root is exactly this directory
+		// the walk takes a pattern: escape the path so that its root is exactly this directory (an escaped path always
+		// compiles to that literal; test/cpp glob_escape_literal). WebHdfsFileSystem::Glob takes literals the same way
 		pattern = webhdfs::EscapeGlob(parsed.path);
 		root_status = &status;
 	}

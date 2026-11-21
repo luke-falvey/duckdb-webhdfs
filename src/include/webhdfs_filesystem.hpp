@@ -169,6 +169,8 @@ protected:
 	}
 
 private:
+	//! The size every endpoint uses, now and when created (endpoints_lock held)
+	void ApplySmallFileCacheSizeLocked(idx_t bytes);
 	//! disabled_filesystems and the file access settings, checked before any secret lookup, Kerberos or request
 	void CheckAccess(const webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	//! The cluster names offered for "scheme://": secret scopes, hdfs-site.xml nameservices and clusters in use

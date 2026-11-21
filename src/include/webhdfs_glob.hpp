@@ -96,7 +96,7 @@ private:
 };
 
 //! Order of the children of one directory in a walk: by name, a directory's name followed by '/', bytes unsigned.
-//! Depth-first output is then in byte order of the full paths.
+//! Depth-first output of the files is then in byte order of the full paths.
 bool WalkOrderLess(const std::string &a, bool a_is_dir, const std::string &b, bool b_is_dir);
 //! Hadoop-style hidden name: starts with '.' or '_'.
 bool IsHiddenName(const std::string &name);
@@ -108,5 +108,7 @@ std::vector<std::string> ExpandBraces(const std::string &pattern);
 bool MatchComponent(const std::string &name, const std::string &pattern);
 //! Remove `\` escapes.
 std::string UnescapeGlob(const std::string &text);
+//! The pattern that names exactly `path`: `\` and the glob characters escaped, so UnescapeGlob gives `path` back.
+std::string EscapeGlob(const std::string &path);
 
 } // namespace webhdfs

@@ -129,8 +129,9 @@ WebHdfsErrorKind ClassifyWebHdfsError(const WebHdfsHttpResult &result, webhdfs::
 
 class WebHdfsClient {
 public:
+	//! `access_type`: how CreateClient checked `url` (see WebHdfsHttp::CreateParams)
 	WebHdfsClient(DatabaseInstance &db, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url, WebHdfsConfig config,
-	              WebHdfsSettings settings, WebHdfsEndpoint &endpoint);
+	              WebHdfsSettings settings, WebHdfsEndpoint &endpoint, FileType access_type);
 
 	const webhdfs::WebHdfsUrl &Url() const {
 		return url;

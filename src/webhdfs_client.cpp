@@ -299,13 +299,13 @@ static string BuildIdentity(DatabaseInstance &db, optional_ptr<FileOpener> opene
 }
 
 WebHdfsClient::WebHdfsClient(DatabaseInstance &db_p, optional_ptr<FileOpener> opener, webhdfs::WebHdfsUrl url_p,
-                             WebHdfsConfig config_p, WebHdfsSettings settings_p, WebHdfsEndpoint &endpoint_p)
+                             WebHdfsConfig config_p, WebHdfsSettings settings_p, WebHdfsEndpoint &endpoint_p,
+                             FileType access_type)
     : db(db_p), url(std::move(url_p)), config(std::move(config_p)), settings(std::move(settings_p)),
       endpoint(endpoint_p) {
-	params = WebHdfsHttp::CreateParams(db, opener, url.ToString());
+	params = WebHdfsHttp::CreateParams(db, opener, url.ToString(), access_type);
 	identity = BuildIdentity(db, opener, url, config);
 	endpoint.RecordConfig(config);
-	endpoint.SetSmallFileCacheSize(settings.small_file_cache_size);
 }
 
 string WebHdfsClient::UrlFor(const string &path) const {
@@ -523,6 +523,11 @@ WebHdfsHttpResult WebHdfsClient::DataNodeCall(RequestType type, const string &re
 	if (config.auth == WebHdfsAuthMode::KERBEROS && endpoint.SpnegoEveryRequest(identity) &&
 	    request_url.find("delegation=") == string::npos) {
 		headers = SpnegoHeaders(request_url);
+	}
+	// only file clients reach a DataNode: a directory client skips HTTPUtil's check (see WebHdfsHttp::CreateParams),
+	// and a DataNode leg must never inherit that, in any build
+	if (params->skip_external_access_check) {
+		throw InternalException("WebHDFS: a DataNode request from a client whose access check is skipped");
 	}
 	endpoint.RecordDataNodeRequest();
 	return Send(type, request_url, headers, data, len, sink);

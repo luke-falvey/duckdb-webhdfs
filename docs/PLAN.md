@@ -159,7 +159,7 @@ Build changes:
 |---|---|
 | `OpenFile` (read) | `GETFILESTATUS` (size, mtime, type). It is skipped when `OpenFileExtended` already has size and mtime from a listing. |
 | `Read(handle, buf, n, offset)` | `GET P?op=OPEN&offset=&length=` to the NameNode → `307` → `GET <Location>` on the DataNode, streamed into the caller's buffer through `content_handler`. Behind a gateway, the first response is already `200` with the data. |
-| `GetFileSize`, `GetLastModifiedTime`, `GetVersionTag` | Values cached on the handle. The version tag is `"<mtime>:<length>"`, as in the hdfs extension, so the external file cache can validate reads without another request. |
+| `GetFileSize`, `GetLastModifiedTime`, `GetVersionTag` | Values cached on the handle. The version tag is `"<fileId>:<mtime>:<length>"`, so the external file cache can validate reads without another request. The inode id is in it because clients can set the mtime (`setTimes`, `distcp -pt`); a server that sends no `fileId` (or 0, HDFS's "unknown") gives -1, which leaves the mtime and length, and `webhdfs_ls` shows NULL. Listed files carry the same tag as their `etag`. |
 | `OpenFile` (write) | Nothing yet. The file is created on the first flush (see Writes). |
 | `Write` / `Close` | Buffer, then `PUT ?op=CREATE&overwrite=true` (`overwrite=false` for `EXCLUSIVE_CREATE` and `NULL_IF_EXISTS`, which COPY uses for new files) → `307` → `PUT <Location>` with the body. Later chunks: `POST ?op=APPEND` → `307` → `POST <Location>` with the body. |
 | `FILE_FLAGS_APPEND` | Every flush is an `APPEND`. |
@@ -322,8 +322,10 @@ The `hadoop.auth` cookie is a fallback for gateways that don't issue tokens.
   bounded queue of pending directories and up to `webhdfs_list_parallelism`
   `LISTSTATUS_BATCH` requests in flight on worker threads. Entries come out of
   `Next()` depth-first with each directory's children sorted (a directory as
-  `name/`), i.e. in byte order of the full paths, whatever order the listings
-  finish in; workers only prefetch. A directory is listed whole (all pages)
+  `name/`). With `files_only` (core's globs), that is byte order of the full
+  paths, whatever order the listings finish in; workers only prefetch. A walk
+  that also emits directories (`webhdfs_ls`) emits a directory after its
+  subtree when the pattern matches both, so its order is not byte order. A directory is listed whole (all pages)
   before its entries are handed out. Retry rules are the same: a connection failure retries
   transparently only before any entry has been handed out.
 - **Settings.** The names match the hdfs extension's, with the prefix swapped:
@@ -533,8 +535,9 @@ Redact `delegation=` and `user.name=` from every URL that appears in error
 messages and in the HTTP logger. httpfs redacts headers, not query strings, so
 `HTTPParams::logger` alone isn't enough. (As implemented, error messages only
 ever contain the `webhdfs://` URL, never a REST URL with query parameters, so
-there is nothing to redact; the unused `RedactUrl` helper was removed. The
-httpfs HTTP logger still sees full request URLs.)
+there is nothing to redact; the unused `RedactUrl` helper was removed. DuckDB's
+HTTP log redacts query strings by default (`redact_http_logs`); with it off, the
+log has full request URLs, tokens included.)
 
 ## 7. Testing
 

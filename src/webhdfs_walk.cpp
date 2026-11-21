@@ -193,8 +193,8 @@ void WebHdfsWalk::Expand(Item &item) {
 	}
 	auto entries = std::move(listing.entries);
 	listing.entries.clear();
-	// A directory sorts as "name/", so the depth-first walk yields full paths in byte order ("a-b/y" before "a/x"):
-	// the order of DuckDB's own sort of each batch, whatever the batch boundaries.
+	// A directory sorts as "name/", so a files-only walk yields full paths in byte order ("a-b/y" before "a/x"):
+	// the order of DuckDB's own sort of each batch, whatever the batch boundaries. (Emitted directories are not.)
 	std::sort(entries.begin(), entries.end(), [](const FileStatus &a, const FileStatus &b) {
 		return webhdfs::WalkOrderLess(a.path_suffix, a.is_dir, b.path_suffix, b.is_dir);
 	});

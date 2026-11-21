@@ -60,21 +60,29 @@ WebHdfsSettings WebHdfsSettings::Load(optional_ptr<DatabaseInstance> db, optiona
 	if (TryGetSetting(db, opener, USER_NAME, value)) {
 		settings.user_name = value.ToString();
 	}
-	// global-only (see Register): read it without the opener
-	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
-		settings.small_file_cache_size = value.GetValue<uint64_t>();
-	}
 	return settings;
 }
 
+idx_t WebHdfsSettings::LoadSmallFileCacheSize(DatabaseInstance &db) {
+	// global-only (see Register): read without an opener
+	Value value;
+	if (TryGetSetting(db, nullptr, SMALL_FILE_CACHE_SIZE, value)) {
+		return value.GetValue<uint64_t>();
+	}
+	return DEFAULT_SMALL_FILE_CACHE_SIZE;
+}
+
 namespace {
-//! Applies a new webhdfs_small_file_cache_size to the caches right away, not only when a cluster is next used
+//! Applies a new webhdfs_small_file_cache_size to every cache right away. Core calls OnSet before it stores the value,
+//! so nothing else may set the size from a value it read from the setting (it could undo this one); extension load
+//! seeds it only if this hook has not run yet (WebHdfsFileSystem::SeedSmallFileCacheSize)
 struct CacheSizeOptionInfo : public ExtensionOptionInfo {
 	explicit CacheSizeOptionInfo(std::function<void(idx_t)> apply_p) : apply(std::move(apply_p)) {
 	}
 	void OnSet(ClientContext &context, SetScope scope, Value &parameter, bool is_reset) const override {
-		if (apply && !parameter.IsNull()) {
-			apply(parameter.GetValue<uint64_t>());
+		if (apply) {
+			// NULL reads as the default everywhere else (Load), so it must here too
+			apply(parameter.IsNull() ? WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE : parameter.GetValue<uint64_t>());
 		}
 	}
 	std::function<void(idx_t)> apply;

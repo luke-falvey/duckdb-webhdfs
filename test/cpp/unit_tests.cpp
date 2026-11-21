@@ -260,6 +260,25 @@ TEST(glob_hidden_rules) {
 	CHECK_EQ(r.size(), 1u);
 }
 
+TEST(glob_escape_literal) {
+	// an escaped path compiles to itself: a literal whose root is exactly that path
+	for (std::string path :
+	     {"/t/x\\y", "/t/a*b", "/t/\\.\\./c", "/t/{a,b}/[x]?", "/plain/path", "/t/x\\", "/t/x\\/c", "/t/a\\\\b"}) {
+		auto pattern = GlobPattern::Compile(EscapeGlob(path), false);
+		CHECK(pattern.IsLiteral());
+		CHECK_EQ(pattern.Root(), path);
+		CHECK_EQ(UnescapeGlob(EscapeGlob(path)), path);
+	}
+	// an escape that makes '..' is still refused
+	bool threw = false;
+	try {
+		GlobPattern::Compile("/a/\\.\\./b", false);
+	} catch (GlobError &) {
+		threw = true;
+	}
+	CHECK(threw);
+}
+
 TEST(glob_roots) {
 	auto plan = GlobPattern::Compile("/data/sub/*.parquet", false);
 	CHECK_EQ(plan.Root(), "/data/sub");
@@ -420,8 +439,38 @@ TEST(json_file_status_times) {
 	CHECK_EQ(status.modification_time, MIN_EPOCH_MS);
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372022400001}})", status, error));
 	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":-9223372036854774}})", status, error));
-	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854774}})", status, error));
-	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775}})", status, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854775}})", status, error));
+	CHECK_EQ(status.modification_time, MAX_EPOCH_MS);
+	CHECK(!ParseFileStatus(R"({"FileStatus":{"type":"FILE","modificationTime":9223372036854776}})", status, error));
+}
+
+TEST(version_tag) {
+	FileStatus a, b;
+	std::string error, tag_a, tag_b;
+	// two files of the same length and mtime are told apart by their fileId
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":7}})", a, error));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":8}})", b, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK(ListingEtag(b, tag_b));
+	CHECK_EQ(tag_a, std::string("7:5:3"));
+	CHECK(tag_a != tag_b);
+	// the listing's etag is the handle's version tag
+	CHECK_EQ(tag_a, VersionTag(7, 5, 3));
+	// no fileId from the server: -1
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5}})", a, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
+	// a negative or zero fileId is no id either
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":0}})", a, error));
+	CHECK_EQ(a.file_id, int64_t(-1));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
+	CHECK(ParseFileStatus(R"({"FileStatus":{"type":"FILE","length":3,"modificationTime":5,"fileId":-5}})", a, error));
+	CHECK(ListingEtag(a, tag_a));
+	CHECK_EQ(tag_a, std::string("-1:5:3"));
+	// a negative length has no etag
+	a.length = -1;
+	CHECK(!ListingEtag(a, tag_a));
 }
 
 TEST(xattr_hex_values) {

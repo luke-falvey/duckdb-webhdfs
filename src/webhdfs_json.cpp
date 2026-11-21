@@ -288,6 +288,10 @@ static bool ParseFileStatusFields(JsonValue obj, FileStatus &status, std::string
 	    !ReadInt32(obj, "storagePolicy", -1, status.storage_policy, error)) {
 		return false;
 	}
+	if (status.file_id <= 0) {
+		// no inode id (0 is HDFS's "unknown" id): one value for "none", so every tag built from it agrees
+		status.file_id = -1;
+	}
 	auto ec = obj["ecPolicy"];
 	if (ec.IsString()) {
 		status.ec_policy = ec.GetString();
@@ -472,6 +476,18 @@ bool DecodeHex(const std::string &text, std::string &out) {
 		result += static_cast<char>(high * 16 + low);
 	}
 	out = std::move(result);
+	return true;
+}
+
+std::string VersionTag(int64_t file_id, int64_t modification_time_ms, uint64_t length) {
+	return std::to_string(file_id) + ":" + std::to_string(modification_time_ms) + ":" + std::to_string(length);
+}
+
+bool ListingEtag(const FileStatus &status, std::string &out) {
+	if (status.length < 0) {
+		return false;
+	}
+	out = VersionTag(status.file_id, status.modification_time, static_cast<uint64_t>(status.length));
 	return true;
 }
 

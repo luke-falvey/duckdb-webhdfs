@@ -90,10 +90,28 @@ static void ValidateNameNodes(const Value &namenodes) {
 	}
 }
 
+//! The scope must name the whole scheme: one no webhdfs:// or swebhdfs:// URL can match ('hdfs://prod', 'prod',
+//! 'WEBHDFS') would leave the secret unused, and a partial one ('webhdfs:/') would apply to every URL by accident.
+//! A scope for every cluster says so explicitly ('webhdfs://'), as for other secret types.
+static void ValidateScope(const string &scope) {
+	auto lower = StringUtil::Lower(scope);
+	for (auto scheme : {"webhdfs://", "swebhdfs://"}) {
+		if (StringUtil::StartsWith(lower, scheme)) {
+			return;
+		}
+	}
+	throw InvalidInputException("webhdfs secret: SCOPE '%s' must start with 'webhdfs://' or 'swebhdfs://' (e.g. "
+	                            "'webhdfs://namenode:9870' for one cluster, 'webhdfs://' for all)",
+	                            scope);
+}
+
 static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	auto scope = input.scope;
 	if (scope.empty()) {
 		scope = {"webhdfs://", "swebhdfs://"};
+	}
+	for (auto &entry : scope) {
+		ValidateScope(entry);
 	}
 	auto secret = make_uniq<WebHdfsSecret>(scope, input.type, input.provider, input.name);
 	secret->redact_keys = {Identifier("delegation_token")};
@@ -129,7 +147,15 @@ static unique_ptr<BaseSecret> CreateWebHdfsSecretFromConfig(ClientContext &conte
 		} else if (name == "use_ssl") {
 			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::BOOLEAN);
 		} else if (name == "replication" || name == "block_size") {
-			secret->secret_map[Identifier(name)] = value.DefaultCastAs(LogicalType::BIGINT);
+			auto number = value.DefaultCastAs(LogicalType::BIGINT);
+			auto n = number.GetValue<int64_t>();
+			// HDFS stores the replication factor as a Java short
+			int64_t max = name == "replication" ? NumericLimits<int16_t>::Maximum() : NumericLimits<int64_t>::Maximum();
+			if (n <= 0 || n > max) {
+				throw InvalidInputException("webhdfs secret: %s must be between 1 and %lld, not %lld",
+				                            StringUtil::Upper(name), max, n);
+			}
+			secret->secret_map[Identifier(name)] = std::move(number);
 		} else {
 			// the binder rejects options that are not in named_parameters before this function runs
 			throw InternalException("webhdfs secret: option '%s' is registered but not handled", name);

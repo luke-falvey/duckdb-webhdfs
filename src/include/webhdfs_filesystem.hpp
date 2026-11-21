@@ -15,11 +15,12 @@ class WebHdfsFileHandle : public FileHandle {
 public:
 	WebHdfsFileHandle(FileSystem &fs, const string &path, FileOpenFlags flags, shared_ptr<WebHdfsClient> client,
 	                  string hdfs_path);
-	//! A writer that was neither closed nor aborted is abandoned: it is aborted, never committed
+	//! A writer that was neither closed nor aborted is committed (Close) unless an exception is unwinding or a request
+	//! failed; then it is aborted. Errors never escape.
 	~WebHdfsFileHandle() override;
 
-	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle stays
-	//! open so that Abort() can still remove the file.
+	//! Send the rest of a write (the CREATE of an empty or small file included). If that fails, the handle is marked
+	//! failed but stays open, so that Abort() can still remove the file.
 	void Close() override;
 	//! Send buffered writes
 	void Flush();
@@ -33,6 +34,8 @@ public:
 	//! File length (readers) or bytes accepted so far (writers)
 	idx_t length = 0;
 	int64_t modification_time_ms = 0;
+	//! The HDFS inode id (fileId; -1 if the server sent none): it changes when a file is replaced
+	int64_t file_id = -1;
 	//! Stream position for Read/Write without a location
 	idx_t position = 0;
 
@@ -70,11 +73,22 @@ public:
 	explicit WebHdfsFileSystem(DatabaseInstance &db);
 	~WebHdfsFileSystem() override;
 
-	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs.
+	//! A client for the authority of `url` (parses `url` into `parsed`). Throws IOException for invalid URLs, and
+	//! PermissionException if the access settings refuse `url`, checked as `access_type` (FILE_TYPE_DIR for calls on
+	//! a directory, which allowed_directories matches with a trailing '/', as core does)
 	shared_ptr<WebHdfsClient> CreateClient(const string &url, optional_ptr<FileOpener> opener,
-	                                       webhdfs::WebHdfsUrl &parsed);
+	                                       webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	WebHdfsEndpoint &GetEndpoint(const string &key);
 	vector<WebHdfsEndpoint::Snapshot> EndpointSnapshots();
+	//! Resize the small-file cache of every cluster, in use or created later (webhdfs_small_file_cache_size). The
+	//! setting's OnSet hook is the only caller: a client never sets the size itself
+	void SetSmallFileCacheSize(idx_t bytes);
+	//! The size at extension load, unless a SET from another connection already reached the hook (which runs before
+	//! the value is stored, so a value read at load could be older than the one it applied)
+	void SeedSmallFileCacheSize(idx_t bytes);
+	//! The configuration a request to the root of endpoint `key` (scheme://authority) would use for the caller of
+	//! `opener`; false if access is refused or it can't be resolved (e.g. an invalid secret)
+	bool TryResolveConfig(const string &key, optional_ptr<FileOpener> opener, WebHdfsConfig &out);
 	//! hdfs-site.xml + core-site.xml from HADOOP_CONF_DIR / HADOOP_HOME (loaded once)
 	const webhdfs::HadoopConfig &SiteConfig();
 	DatabaseInstance &GetDatabase() {
@@ -133,7 +147,7 @@ public:
 		return "WebHdfsFileSystem";
 	}
 
-	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime and type travel with it
+	//! The OpenFileInfo DuckDB gets for a listed file: size, mtime, type and etag travel with it
 	static OpenFileInfo MakeOpenFileInfo(const string &url, const webhdfs::FileStatus &status);
 
 protected:
@@ -155,6 +169,10 @@ protected:
 	}
 
 private:
+	//! The size every endpoint uses, now and when created (endpoints_lock held)
+	void ApplySmallFileCacheSizeLocked(idx_t bytes);
+	//! disabled_filesystems and the file access settings, checked before any secret lookup, Kerberos or request
+	void CheckAccess(const webhdfs::WebHdfsUrl &parsed, FileType access_type);
 	//! The cluster names offered for "scheme://": secret scopes, hdfs-site.xml nameservices and clusters in use
 	void ListClusterNames(const string &scheme, optional_ptr<FileOpener> opener,
 	                      const std::function<void(OpenFileInfo &info)> &callback);
@@ -162,6 +180,10 @@ private:
 	DatabaseInstance &db;
 	mutex endpoints_lock;
 	unordered_map<string, unique_ptr<WebHdfsEndpoint>> endpoints;
+	//! The small-file cache size every endpoint uses (guarded by endpoints_lock)
+	idx_t small_file_cache_size = WebHdfsSettings::DEFAULT_SMALL_FILE_CACHE_SIZE;
+	//! SetSmallFileCacheSize has run (guarded by endpoints_lock)
+	bool small_file_cache_size_set = false;
 	mutex site_lock;
 	bool site_loaded = false;
 	webhdfs::HadoopConfig site;

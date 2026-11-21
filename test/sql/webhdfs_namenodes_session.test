@@ -1,0 +1,69 @@
+# name: test/sql/webhdfs_namenodes_session.test
+# description: webhdfs_namenodes() shows the caller's configuration for the cluster root, and only on its NameNodes
+# group: [sql]
+
+require webhdfs
+
+require httpfs
+
+# nothing listens on ports 5 and 6: each read records the NameNodes it tried, then fails
+statement ok
+CREATE SECRET root_secret (TYPE webhdfs, SCOPE 'webhdfs://127.0.0.3', NAMENODES ['localhost:5'], USER_NAME 'etl');
+
+statement error
+SELECT * FROM read_csv('webhdfs://127.0.0.3/x.csv');
+----
+no NameNode could serve the request
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://127.0.0.3';
+----
+localhost:5	simple	secret	root_secret
+
+# a secret scoped to a path below the root is not what the root resolves to: its NameNode gets NULL, not the
+# root's configuration
+statement ok
+CREATE SECRET sub_secret (TYPE webhdfs, SCOPE 'webhdfs://127.0.0.4/sub', NAMENODES ['localhost:6'], AUTH 'none');
+
+statement error
+SELECT * FROM read_csv('webhdfs://127.0.0.4/sub/x.csv');
+----
+no NameNode could serve the request
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://127.0.0.4';
+----
+localhost:6	NULL	NULL	NULL
+
+# the columns describe the cluster root: a path-scoped secret that uses the root's NameNode (here the URL's) is not
+# what the root resolves to, so the row shows the root's configuration
+statement ok
+CREATE SECRET sub_same_nn (TYPE webhdfs, SCOPE 'webhdfs://localhost:7/sub', AUTH 'none');
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:7/sub/x.csv');
+----
+no NameNode could serve the request
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:7';
+----
+localhost:7	simple	url	NULL
+
+# with file access off, an allowed cluster root still resolves; one only a directory below is allowed for doesn't, and
+# the function then reads no secrets or Hadoop configuration for it (keep this last)
+statement ok
+SET allowed_directories = ['webhdfs://127.0.0.3/data/', 'webhdfs://localhost:7/'];
+
+statement ok
+SET enable_external_access = false;
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://localhost:7';
+----
+localhost:7	simple	url	NULL
+
+query TTTT
+SELECT namenode, auth_mode, namenode_source, secret_name FROM webhdfs_namenodes() WHERE endpoint = 'webhdfs://127.0.0.3';
+----
+localhost:5	NULL	NULL	NULL

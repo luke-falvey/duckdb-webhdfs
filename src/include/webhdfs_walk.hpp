@@ -37,11 +37,14 @@ struct WebHdfsWalkStats {
 
 class WebHdfsWalk {
 public:
-	//! `pattern` is the HDFS path (may contain wildcards)
-	WebHdfsWalk(shared_ptr<WebHdfsClient> client, const string &pattern, WebHdfsWalkOptions options);
+	//! `pattern` is the HDFS path (may contain wildcards). `root_status`: the status of a literal `pattern`, if the
+	//! caller has it already (saves a GETFILESTATUS)
+	WebHdfsWalk(shared_ptr<WebHdfsClient> client, const string &pattern, WebHdfsWalkOptions options,
+	            optional_ptr<const webhdfs::FileStatus> root_status = nullptr);
 	~WebHdfsWalk();
 
 	//! Append up to `max_entries` entries to `out`. Returns false when the walk is exhausted and nothing was added.
+	//! Once it has thrown, every later call throws the same error.
 	bool Next(vector<WebHdfsWalkEntry> &out, idx_t max_entries);
 	//! Walk everything
 	vector<WebHdfsWalkEntry> All();
@@ -68,6 +71,7 @@ private:
 		shared_ptr<Listing> listing;
 	};
 
+	bool NextInternal(vector<WebHdfsWalkEntry> &out, idx_t max_entries);
 	void Start();
 	void WorkerLoop();
 	void Fetch(const string &path, Listing &listing);
@@ -80,6 +84,8 @@ private:
 	shared_ptr<WebHdfsClient> client;
 	webhdfs::GlobPattern pattern;
 	WebHdfsWalkOptions options;
+	bool has_root_status = false;
+	webhdfs::FileStatus root_status;
 
 	mutex lock;
 	std::condition_variable cv;
@@ -88,6 +94,8 @@ private:
 	bool shutdown = false;
 	vector<std::thread> workers;
 	WebHdfsWalkStats stats;
+	//! The first error Next() threw (Next is called by one thread at a time)
+	std::exception_ptr failure;
 };
 
 } // namespace duckdb

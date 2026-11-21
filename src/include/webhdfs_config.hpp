@@ -8,6 +8,8 @@
 #include "webhdfs_hadoop_config.hpp"
 #include "webhdfs_url.hpp"
 
+#include <functional>
+
 namespace duckdb {
 
 struct WebHdfsSettings {
@@ -32,12 +34,14 @@ struct WebHdfsSettings {
 	idx_t write_chunk_size = DEFAULT_WRITE_CHUNK_SIZE;
 	bool reuse_redirects = true;
 	string user_name;
-	idx_t small_file_cache_size = DEFAULT_SMALL_FILE_CACHE_SIZE;
 
 	//! Current values (session settings through the opener, else global settings of `db`)
 	static WebHdfsSettings Load(optional_ptr<DatabaseInstance> db, optional_ptr<FileOpener> opener);
-	//! Register the settings on the database
-	static void Register(DatabaseInstance &db);
+	//! The global webhdfs_small_file_cache_size, read once at extension load: after that the setting's OnSet hook
+	//! is the only thing that changes the caches' size (a per-client copy could undo a concurrent SET)
+	static idx_t LoadSmallFileCacheSize(DatabaseInstance &db);
+	//! Register the settings on the database; `on_cache_size` applies a new small-file cache size
+	static void Register(DatabaseInstance &db, std::function<void(idx_t)> on_cache_size);
 };
 
 enum class WebHdfsAuthMode : uint8_t {

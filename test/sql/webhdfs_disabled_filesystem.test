@@ -1,0 +1,26 @@
+# name: test/sql/webhdfs_disabled_filesystem.test
+# description: disabled_filesystems applies to the webhdfs_* functions, not only to paths opened through the VFS
+# group: [sql]
+
+require webhdfs
+
+# no httpfs: the checks come before anything that needs it
+
+# nothing listens on port 1: without the checks these would fail with a connection error instead
+statement ok
+SET disabled_filesystems = 'WebHdfsFileSystem';
+
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:1/x');
+----
+File system WebHdfsFileSystem has been disabled by configuration
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:1/');
+----
+File system WebHdfsFileSystem has been disabled by configuration
+
+statement error
+SELECT * FROM read_csv('webhdfs://localhost:1/x.csv');
+----
+File system WebHdfsFileSystem has been disabled by configuration

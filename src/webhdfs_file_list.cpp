@@ -17,7 +17,7 @@ bool WebHdfsFileList::ExpandNextPath() const {
 				return false;
 			}
 			webhdfs::WebHdfsUrl parsed;
-			client = fs.CreateClient(globs[current_glob], opener, parsed);
+			client = fs.CreateClient(globs[current_glob], opener, parsed, FileType::FILE_TYPE_REGULAR);
 			prefix = parsed.Prefix();
 			if (!webhdfs::HasGlobCharacters(parsed.path)) {
 				current_glob++;

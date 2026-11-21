@@ -241,7 +241,7 @@ static bool ReadEpochMs(JsonValue obj, const char *field, int64_t &out, std::str
 	if (!ReadInt(obj, field, 0, out, error)) {
 		return false;
 	}
-	if (out < -MAX_EPOCH_MS || out > MAX_EPOCH_MS) {
+	if (out < MIN_EPOCH_MS || out > MAX_EPOCH_MS) {
 		error = std::string("field \"") + field + "\" is not a valid time: " + std::to_string(out);
 		return false;
 	}
@@ -287,6 +287,10 @@ static bool ParseFileStatusFields(JsonValue obj, FileStatus &status, std::string
 	    !ReadInt(obj, "childrenNum", -1, status.children_num, error) ||
 	    !ReadInt32(obj, "storagePolicy", -1, status.storage_policy, error)) {
 		return false;
+	}
+	if (status.file_id <= 0) {
+		// no inode id (0 is HDFS's "unknown" id): one value for "none", so every tag built from it agrees
+		status.file_id = -1;
 	}
 	auto ec = obj["ecPolicy"];
 	if (ec.IsString()) {
@@ -441,6 +445,49 @@ bool ParseLongResult(const std::string &body, int64_t &out, std::string &error) 
 		error = "long result is out of range: " + value.ToJson();
 		return false;
 	}
+	return true;
+}
+
+static int HexDigit(char c) {
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	return -1;
+}
+
+bool DecodeHex(const std::string &text, std::string &out) {
+	size_t start = text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') ? 2 : 0;
+	if ((text.size() - start) % 2 != 0) {
+		return false;
+	}
+	std::string result;
+	for (size_t i = start; i < text.size(); i += 2) {
+		auto high = HexDigit(text[i]);
+		auto low = HexDigit(text[i + 1]);
+		if (high < 0 || low < 0) {
+			return false;
+		}
+		result += static_cast<char>(high * 16 + low);
+	}
+	out = std::move(result);
+	return true;
+}
+
+std::string VersionTag(int64_t file_id, int64_t modification_time_ms, uint64_t length) {
+	return std::to_string(file_id) + ":" + std::to_string(modification_time_ms) + ":" + std::to_string(length);
+}
+
+bool ListingEtag(const FileStatus &status, std::string &out) {
+	if (status.length < 0) {
+		return false;
+	}
+	out = VersionTag(status.file_id, status.modification_time, static_cast<uint64_t>(status.length));
 	return true;
 }
 

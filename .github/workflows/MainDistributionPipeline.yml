@@ -19,7 +19,7 @@ jobs:
       duckdb_version: v2.0.0
       ci_tools_version: v2.0-cyanoptera
       extension_name: webhdfs
-      # The directory walk uses threads, and WebHDFS redirects across hosts don't suit browser fetch (CORS)
+      # Browser fetch follows redirects itself (the extension must handle DataNode redirects) and Kerberos needs dlopen
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'
 
   code-quality-check:

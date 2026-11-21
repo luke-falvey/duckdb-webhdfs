@@ -15,6 +15,8 @@
 #include "webhdfs_glob.hpp"
 #include "webhdfs_json.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 using webhdfs::FileStatus;
@@ -196,8 +198,10 @@ struct MetaCall {
 	string url;
 	const named_argument_map_t &named;
 
-	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed) {
-		return fs.CreateClient(url, ContextOpener(context), parsed);
+	//! Most functions take a file or a directory: checked as a directory, the allowed directory itself is accessible.
+	//! Those that only describe a file's contents (checksum, block locations) check it as a file.
+	shared_ptr<WebHdfsClient> Client(webhdfs::WebHdfsUrl &parsed, FileType access_type) {
+		return fs.CreateClient(url, ContextOpener(context), parsed, access_type);
 	}
 	bool NamedBool(const char *name, bool default_value) const {
 		for (auto &entry : named) {
@@ -234,33 +238,41 @@ static unique_ptr<RowSource> SingleRow(Row row) {
 
 static unique_ptr<RowSource> MakeLs(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto &settings = client->Settings();
 	WebHdfsWalkOptions options;
 	options.include_hidden = call.NamedBool("include_hidden", settings.include_hidden);
 	options.skip_permission_errors = call.NamedBool("skip_permission_errors", settings.skip_permission_errors);
 	options.parallelism = settings.list_parallelism;
 	options.files_only = false;
+	FileStatus status;
+	optional_ptr<const FileStatus> root_status;
+	auto pattern = parsed.path;
 	if (!webhdfs::HasGlobCharacters(parsed.path)) {
-		auto status = client->GetFileStatus(parsed.path);
+		// a path with no glob characters names itself, backslashes included, as in read_* and glob()
+		status = client->GetFileStatus(parsed.path);
 		if (!status.is_dir) {
 			return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 		}
+		// the walk takes a pattern: escape the path so that its root is exactly this directory (an escaped path always
+		// compiles to that literal; test/cpp glob_escape_literal). WebHdfsFileSystem::Glob takes literals the same way
+		pattern = webhdfs::EscapeGlob(parsed.path);
+		root_status = &status;
 	}
-	auto walk = make_uniq<WebHdfsWalk>(client, parsed.path, options);
+	auto walk = make_uniq<WebHdfsWalk>(client, pattern, options, root_status);
 	return make_uniq<WalkRowSource>(client, std::move(walk));
 }
 
 static unique_ptr<RowSource> MakeStat(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto status = client->GetFileStatus(parsed.path);
 	return SingleRow(EntryRow(client->UrlFor(parsed.path), parsed.path, status));
 }
 
 static unique_ptr<RowSource> MakeContentSummary(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETCONTENTSUMMARY", parsed.path), "GETCONTENTSUMMARY");
 	auto summary = doc->Root()["ContentSummary"];
 	auto ec = summary["ecPolicy"];
@@ -280,7 +292,7 @@ static LogicalType TypeQuotaType() {
 
 static unique_ptr<RowSource> MakeQuotaUsage(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETQUOTAUSAGE", parsed.path), "GETQUOTAUSAGE");
 	auto usage = doc->Root()["QuotaUsage"];
 	vector<Value> keys;
@@ -303,11 +315,14 @@ static unique_ptr<RowSource> MakeQuotaUsage(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_REGULAR);
 	auto offset_value = call.Named("offset");
 	auto length_value = call.Named("length");
 	int64_t offset = offset_value.IsNull() ? 0 : offset_value.GetValue<int64_t>();
 	int64_t length = length_value.IsNull() ? NumericLimits<int64_t>::Maximum() : length_value.GetValue<int64_t>();
+	if (offset < 0 || length < 0) {
+		throw InvalidInputException("webhdfs_block_locations: offset and length must not be negative");
+	}
 	vector<std::pair<string, string>> query {{"offset", std::to_string(offset)}, {"length", std::to_string(length)}};
 	auto url = client->UrlFor(parsed.path);
 	vector<Row> rows;
@@ -359,7 +374,7 @@ static unique_ptr<RowSource> MakeBlockLocations(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_REGULAR);
 	auto doc = ParseJson(client->GetJsonViaDataNode("GETFILECHECKSUM", parsed.path), "GETFILECHECKSUM");
 	auto checksum = doc->Root()["FileChecksum"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), Value(checksum["algorithm"].GetString()),
@@ -369,7 +384,7 @@ static unique_ptr<RowSource> MakeChecksum(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETACLSTATUS", parsed.path), "GETACLSTATUS");
 	auto acl = doc->Root()["AclStatus"];
 	auto permission = webhdfs::ParseOctalPermission(acl["permission"].GetString());
@@ -378,27 +393,9 @@ static unique_ptr<RowSource> MakeAcl(MetaCall &call) {
 	                  Value::BOOLEAN(acl["stickyBit"].GetBool()), StringList(acl["entries"])});
 }
 
-static bool DecodeHex(const string &text, string &out) {
-	auto start = text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') ? 2 : 0;
-	if ((text.size() - start) % 2 != 0) {
-		return false;
-	}
-	out.clear();
-	for (idx_t i = start; i < text.size(); i += 2) {
-		auto hex = text.substr(i, 2);
-		char *end = nullptr;
-		auto byte = strtol(hex.c_str(), &end, 16);
-		if (!end || *end != '\0') {
-			return false;
-		}
-		out += static_cast<char>(byte);
-	}
-	return true;
-}
-
 static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	vector<std::pair<string, string>> query {{"encoding", "hex"}};
 	auto names = call.Named("names");
 	if (!names.IsNull()) {
@@ -406,6 +403,12 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 			if (!name.IsNull()) {
 				query.emplace_back("xattr.name", name.ToString());
 			}
+		}
+		if (query.size() == 1) {
+			// an empty filter selects nothing (GETXATTRS without a name would return every attribute), but a missing
+			// path is still an error, as with any other filter
+			client->GetFileStatus(parsed.path);
+			return make_uniq<VectorRowSource>(vector<Row>());
 		}
 	}
 	auto doc = ParseJson(client->GetJson("GETXATTRS", parsed.path, query), "GETXATTRS");
@@ -417,7 +420,7 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 		string bytes;
 		auto value = xattr["value"];
 		Value blob(LogicalType::BLOB);
-		if (!value.IsNull() && !value.IsMissing() && DecodeHex(value.GetString(), bytes)) {
+		if (!value.IsNull() && !value.IsMissing() && webhdfs::DecodeHex(value.GetString(), bytes)) {
 			blob = Value::BLOB_RAW(bytes);
 		}
 		rows.push_back({Value(url), Value(xattr["name"].GetString()), blob});
@@ -427,7 +430,7 @@ static unique_ptr<RowSource> MakeXattrs(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSTORAGEPOLICY", parsed.path), "GETSTORAGEPOLICY");
 	auto policy = doc->Root()["BlockStoragePolicy"];
 	return SingleRow({Value(client->UrlFor(parsed.path)), IntegerValue(policy["id"], "GETSTORAGEPOLICY", "id"),
@@ -438,7 +441,7 @@ static unique_ptr<RowSource> MakeStoragePolicy(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSNAPSHOTLIST", parsed.path), "GETSNAPSHOTLIST");
 	auto snapshots = doc->Root()["SnapshotList"];
 	vector<Row> rows;
@@ -455,7 +458,7 @@ static unique_ptr<RowSource> MakeSnapshots(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSNAPSHOTTABLEDIRECTORYLIST", "/"), "GETSNAPSHOTTABLEDIRECTORYLIST");
 	auto list = doc->Root()["SnapshottableDirectoryList"];
 	vector<Row> rows;
@@ -474,7 +477,7 @@ static unique_ptr<RowSource> MakeSnapshottableDirectories(MetaCall &call) {
 
 static unique_ptr<RowSource> MakeServerDefaults(MetaCall &call) {
 	webhdfs::WebHdfsUrl parsed;
-	auto client = call.Client(parsed);
+	auto client = call.Client(parsed, FileType::FILE_TYPE_DIR);
 	auto doc = ParseJson(client->GetJson("GETSERVERDEFAULTS", "/"), "GETSERVERDEFAULTS");
 	auto defaults = doc->Root()["FsServerDefaults"];
 	auto bigint = [&](const char *name) {
@@ -713,7 +716,7 @@ static void ExistsFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, bool>(args.data[0], result, args.size(), [&](string_t url) {
 		webhdfs::WebHdfsUrl parsed;
-		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed);
+		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
 		FileStatus status;
 		return client->TryGetFileStatus(parsed.path, status);
 	});
@@ -724,7 +727,7 @@ static void PathFunction(DataChunk &args, ExpressionState &state, Vector &result
 	auto &context = state.GetContext();
 	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t url) {
 		webhdfs::WebHdfsUrl parsed;
-		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed);
+		auto client = fs.CreateClient(url.GetString(), ContextOpener(context), parsed, FileType::FILE_TYPE_DIR);
 		auto doc = ParseJson(client->GetJson(op, root ? "/" : parsed.path), op);
 		auto path = doc->Root()["Path"].GetString();
 		return StringVector::AddString(result, client->UrlFor(path));
@@ -784,14 +787,24 @@ static unique_ptr<GlobalTableFunctionState> NameNodesInit(ClientContext &context
 	auto &bind_data = input.bind_data->Cast<NameNodesBindData>();
 	auto state = make_uniq<NameNodesState>();
 	for (auto &snapshot : bind_data.fs.EndpointSnapshots()) {
+		// auth, NameNode source and secret as this session resolves them now for the cluster root: they depend on
+		// its secrets. The endpoint lists every NameNode any configuration used, so they are only shown on the
+		// NameNodes that configuration names (a dropped secret's, another session's or a path-scoped secret's
+		// NameNodes get NULL)
+		WebHdfsConfig config;
+		bool resolved = bind_data.fs.TryResolveConfig(snapshot.key, ContextOpener(context), config);
 		for (auto &nn : snapshot.namenodes) {
+			bool in_config = resolved && std::find(config.namenodes.begin(), config.namenodes.end(), nn.first) !=
+			                                 config.namenodes.end();
+			auto auth_mode = in_config ? Value(AuthModeToString(config.auth)) : Value(LogicalType::VARCHAR);
+			auto namenode_source = in_config ? Value(config.namenode_source) : Value(LogicalType::VARCHAR);
+			auto secret_name = in_config ? OptionalString(config.secret_name) : Value(LogicalType::VARCHAR);
 			auto batched =
 			    snapshot.batch_listing < 0 ? Value(LogicalType::BOOLEAN) : Value::BOOLEAN(snapshot.batch_listing == 1);
 			state->rows.push_back({Value(snapshot.key), Value(nn.first), Value(nn.second.state),
 			                       Value::BOOLEAN(nn.first == snapshot.active), Value::UBIGINT(nn.second.requests),
 			                       OptionalString(nn.second.last_error), Value::UBIGINT(snapshot.datanode_requests),
-			                       Value(snapshot.auth_mode), Value(snapshot.namenode_source),
-			                       OptionalString(snapshot.secret_name), batched});
+			                       auth_mode, namenode_source, secret_name, batched});
 		}
 	}
 	return std::move(state);

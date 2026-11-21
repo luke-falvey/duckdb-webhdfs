@@ -15,7 +15,9 @@ requests than on a real cluster (default 1,000 per page).
 
 ## Results
 
-Single-node Docker cluster on the same machine (4 cores), so round trips cost well under a millisecond. On a real
+Measured before the review-quorum changes (PR #4 and round 2), one run per query, so the times are indicative only;
+`test/sql/integration/webhdfs_requests.test` pins the request counts that matter. Single-node Docker cluster on the
+same machine (4 cores), so round trips cost well under a millisecond. On a real
 network every request costs 0.5-5 ms, which makes the request counts the number to watch.
 
 | query | seconds | NameNode requests | DataNode requests |

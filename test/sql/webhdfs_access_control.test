@@ -1,0 +1,49 @@
+# name: test/sql/webhdfs_access_control.test
+# description: enable_external_access applies to the webhdfs_* functions before any request (or Kerberos)
+# group: [sql]
+
+require webhdfs
+
+# no httpfs: the checks come before anything that needs it
+
+# a secret that turns on Kerberos: the check must come before the ticket cache and the KDC are used
+statement ok
+CREATE SECRET krb (TYPE webhdfs, SCOPE 'webhdfs://localhost:1', AUTH 'kerberos');
+
+statement ok
+SET allowed_directories = ['webhdfs://localhost:1/data/'];
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+SELECT webhdfs_exists('webhdfs://localhost:1/x');
+----
+Cannot access "webhdfs://localhost:1/x" - file system operations are disabled by configuration
+
+statement error
+SELECT * FROM webhdfs_ls('webhdfs://localhost:1/dir');
+----
+Cannot access "webhdfs://localhost:1/dir" - file system operations are disabled by configuration
+
+statement error
+SELECT webhdfs_home_directory('webhdfs://localhost:1');
+----
+Cannot access "webhdfs://localhost:1/" - file system operations are disabled by configuration
+
+# the allowed directory itself passes the check for a call on a directory (it then fails for another reason) ...
+statement error
+SELECT * FROM webhdfs_stat('webhdfs://localhost:1/data');
+----
+<!REGEX>:.*Cannot access.*
+
+# ... but it is not a file: calls about a file's contents check the path as one and refuse it
+statement error
+SELECT * FROM webhdfs_checksum('webhdfs://localhost:1/data');
+----
+Cannot access "webhdfs://localhost:1/data" - file system operations are disabled by configuration
+
+statement error
+SELECT * FROM webhdfs_block_locations('webhdfs://localhost:1/data');
+----
+Cannot access "webhdfs://localhost:1/data" - file system operations are disabled by configuration

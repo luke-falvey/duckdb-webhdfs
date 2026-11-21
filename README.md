@@ -23,8 +23,14 @@ SELECT path, size, owner FROM webhdfs_ls('webhdfs://namenode:9870/data/**') ORDE
 - Writing with `COPY ... TO`, including `PARTITION_BY`, `OVERWRITE`, `OVERWRITE_OR_IGNORE` and `USE_TMP_FILE`. HDFS
   files are append-only: a file is created with its first 64 MiB, then appended to.
 - Globbing: `*`, `?`, `[abc]`, `**` (any depth), `{a,b}` alternation. Hidden entries (`_SUCCESS`, `_temporary`,
-  `.crc` files) are skipped unless named. Listings are paged (`LISTSTATUS_BATCH`) and run in parallel, and files come
-  back in a stable order.
+  `.crc` files) are skipped unless named. Listings are paged (`LISTSTATUS_BATCH`) and run in parallel, and the files a
+  glob expands to (for `read_*` and `glob()`) come back sorted by full path (byte order), however many listings run at
+  once. `webhdfs_ls`, which also returns directories, has no defined row order: use `ORDER BY`.
+  In a pattern, a backslash escapes the next character (`a\*b*` matches names that start with `a*b`; write `d\\x/*` for
+  the children of a directory named `d\x`). A path with no
+  unescaped glob characters is taken literally, backslashes included, in every function: `webhdfs_ls('.../a\b')` lists
+  the directory named `a\b`. Unlike DuckDB's local files, `a\*b` on its own is therefore the name `a\*b`; to reach the
+  file `a*b`, use a pattern such as `a[*]b`.
 - Several clusters in one query, each with its own credentials; HA NameNode lists with failover, from a secret or from
   `hdfs-site.xml`.
 - Authentication: Hadoop simple auth (`user.name`), proxy users (`doas`), delegation tokens, Kerberos (SPNEGO, using
@@ -76,7 +82,11 @@ Options:
 | `KERBEROS_SERVICE` | Service name of the NameNode's HTTP principal (default `HTTP`). |
 | `PERMISSION`, `REPLICATION`, `BLOCK_SIZE` | Options for files created by writes (octal string, BIGINT, BIGINT). |
 
-`CREATE SECRET` checks these combinations, so a misconfigured secret fails when it is created, not on first use.
+`CREATE SECRET` checks the `AUTH` value and its combination with `DELEGATION_TOKEN`, that each `NAMENODES` entry is
+`host:port`, that `REPLICATION` (1 to 32767) and `BLOCK_SIZE` are positive, and that each `SCOPE` starts with the
+whole `webhdfs://` or `swebhdfs://` in any case (`'webhdfs:/'` or a bare `'WEBHDFS'` is an error; `'webhdfs://'` is
+every cluster), so those mistakes fail when the secret is created, not on first use. `PERMISSION` and `GATEWAY_PATH`
+are passed to the server as given.
 
 State kept per cluster (Kerberos delegation tokens, reused DataNode redirects, the small-file cache) is kept per
 identity: auth mode, user, proxy user, Kerberos principal and `http` secret. Two secrets for the same cluster with
@@ -84,10 +94,12 @@ different `PROXY_USER`s never share a token or cached data.
 
 Persistent `webhdfs` secrets are stored as ordinary key-value secrets, so sessions that don't load webhdfs can still
 read their other persistent secrets. After a restart `which_secret()` reports core's prefix matching for them; the
-extension itself always matches scopes by whole authority.
+extension itself always matches scopes by whole authority. Persistent secrets created by earlier development builds
+used a custom format that only sessions with webhdfs loaded can read: re-create them (`CREATE OR REPLACE PERSISTENT
+SECRET`) to store them in the new format.
 
-Without a secret, the user is `webhdfs_user_name`, else `HADOOP_USER_NAME`, else the OS user (`HADOOP_PROXY_USER`
-sets the proxy user). The auth mode is the secret's `AUTH`, else `token` if it has a `DELEGATION_TOKEN`, else
+When the matching secret doesn't set `USER_NAME` (or there is no secret), the user is `webhdfs_user_name`, else
+`HADOOP_USER_NAME`, else the OS user; when it doesn't set `PROXY_USER`, `HADOOP_PROXY_USER` sets the proxy user. The auth mode is the secret's `AUTH`, else `token` if it has a `DELEGATION_TOKEN`, else
 `kerberos` if `hadoop.security.authentication` is `kerberos` in `core-site.xml` (with or without a secret), else
 `simple`.
 
@@ -105,8 +117,8 @@ CREATE SECRET knox_path (TYPE webhdfs, SCOPE 'swebhdfs://knox.example.com:8443',
 ### Kerberos
 
 With `AUTH 'kerberos'`, the extension authenticates with SPNEGO using your Kerberos ticket cache: run `kinit` first;
-`KRB5CCNAME` picks the cache and `KRB5_CONFIG` the `krb5.conf`. It fetches one delegation token per cluster with
-SPNEGO and uses it for later requests and DataNode redirects, fetching a new one after 12 hours or when the server
+`KRB5CCNAME` picks the cache and `KRB5_CONFIG` the `krb5.conf`. It fetches one delegation token per cluster and identity
+(principal, proxy user) with SPNEGO and uses it for later requests and DataNode redirects, fetching a new one after 12 hours or when the server
 rejects it. GSSAPI is loaded from the system (`libgssapi_krb5`, or `GSS.framework` on macOS) only when Kerberos is
 used. Kerberos is not supported on Windows yet.
 
@@ -131,11 +143,13 @@ SELECT endpoint, namenode, state, active, requests, last_error FROM webhdfs_name
 ## Metadata functions
 
 Each table function takes a URL. It can also take a column, as in
-`SELECT ... FROM webhdfs_ls('webhdfs://nn:9870/d') l, webhdfs_stat(l.path) s`.
+`SELECT ... FROM webhdfs_ls('webhdfs://nn:9870/d') l, webhdfs_stat(l.path) s`. Besides the columns listed below,
+every table function but `webhdfs_namenodes()` starts with the URL it describes: `path`, or `endpoint` for
+`webhdfs_server_defaults`.
 
 | Function | Returns |
 |---|---|
-| `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)` | A directory's children, a glob's matches (directories included), or a file itself. Columns: `path`, `name`, `type`, `size`, `owner`, `group`, `permissions` (`rw-r--r--`), `mode`, `replication`, `block_size`, `last_modified`, `last_accessed`, `file_id`, `children_num`, `storage_policy`, `ec_policy`. `last_modified` and `last_accessed` are `TIMESTAMP WITH TIME ZONE`; `last_accessed` is NULL for directories and when the NameNode doesn't track access times. |
+| `webhdfs_ls(url, include_hidden :=, skip_permission_errors :=)` | A directory's children, a glob's matches (directories included), or a file itself. Columns: `path`, `name`, `type`, `size`, `owner`, `group`, `permissions` (`rw-r--r--`), `mode`, `replication`, `block_size`, `last_modified`, `last_accessed`, `file_id`, `children_num`, `storage_policy`, `ec_policy`. `last_modified` and `last_accessed` are `TIMESTAMP WITH TIME ZONE`; `last_accessed` is NULL for directories and when the NameNode doesn't track access times; `file_id` is NULL when the server sends no inode id (or 0, HDFS's "unknown"). |
 | `webhdfs_stat(url)` | The same columns for one path. |
 | `webhdfs_exists(url)` | `BOOLEAN` (scalar). |
 | `webhdfs_content_summary(url)` | Recursive totals: `length`, `file_count`, `directory_count`, `space_consumed`, `quota`, `space_quota`, `erasure_coding_policy`. |
@@ -149,7 +163,7 @@ Each table function takes a URL. It can also take a column, as in
 | `webhdfs_snapshottable_directories(url)` | Snapshottable directories of the cluster. |
 | `webhdfs_server_defaults(url)` | Cluster defaults: block size, replication, checksum type, trash interval, ... |
 | `webhdfs_home_directory(url)`, `webhdfs_trash_root(url)` | URLs (scalars). |
-| `webhdfs_namenodes()` | Per cluster and NameNode: state, request counts, last error, authentication, where the NameNode list came from. |
+| `webhdfs_namenodes()` | One row per cluster and NameNode in use by this database: `endpoint`, `namenode`, `state`, `active`, `requests`, `last_error`, `datanode_requests`, `auth_mode`, `namenode_source`, `secret_name`, `batched_listing`. `auth_mode`, `namenode_source` and `secret_name` are what this session would use now for the cluster root (`/`), not for a path below it: a secret scoped to `webhdfs://nn/data` is not shown, even for the NameNode its requests went to. They are NULL on a NameNode the root's configuration doesn't name (one from a dropped secret, another session's secret or a path-scoped secret's `NAMENODES`), when the access settings refuse the cluster root, and when the secret for it is invalid. |
 
 Missing paths raise an error (except in `webhdfs_exists` and in globs, which match nothing). Permission errors fail
 the query; `skip_permission_errors := true` (or `SET webhdfs_skip_permission_errors = true`) skips unreadable
@@ -182,7 +196,7 @@ SELECT * FROM read_parquet('webhdfs://nn:9870/warehouse/events/year=2024/month={
 | `webhdfs_read_buffer_size` | 1 MiB | Minimum read size; small sequential reads fetch this much ahead. 0 turns read-ahead off. |
 | `webhdfs_write_chunk_size` | 64 MiB | Data buffered per file being written before it is sent. |
 | `webhdfs_reuse_redirects` | true | Reuse a file's DataNode redirect for later reads of it. |
-| `webhdfs_small_file_cache_size` | 64 MiB | Memory per cluster for whole small files (see Performance notes). 0 turns the cache off. Database-wide: use `SET GLOBAL`. |
+| `webhdfs_small_file_cache_size` | 64 MiB | Memory per cluster for whole small files (see Performance notes). 0 turns the cache off. Database-wide: `SET` changes it for every session (`SET SESSION` is an error) and applies at once. |
 | `webhdfs_user_name` | (unset) | User for simple authentication when no secret sets one. |
 
 ## Autocomplete
@@ -202,27 +216,36 @@ listing or for httpfs's timeout; the shell then just offers nothing.
 
 - Each file read costs one NameNode request (`OPEN`, answered by a redirect to a DataNode); later reads of the same
   file go straight to the DataNode. Files found by a glob or listing are opened without asking for their status
-  again.
+  again (DuckDB's CSV reader is the exception: it opens files by name, which costs a `GETFILESTATUS` per open). Listed
+  files carry an `etag`, so with `SET parquet_metadata_cache = true` a repeated query over the same Parquet files
+  sends only the listing. `test/sql/integration/webhdfs_requests.test` pins these request counts.
 - Files up to `webhdfs_read_buffer_size` are fetched in one request and kept in a small cache (`webhdfs_small_file_cache_size`, 64 MiB per
-  cluster by default, keyed by identity, path and modification time; not counted against `memory_limit`), so a reader that opens a file twice (DuckDB's Parquet reader does)
+  cluster by default, keyed by identity, path and version tag; not counted against `memory_limit`), so a reader that opens a file twice (DuckDB's Parquet reader does)
   reads it once. A read near the end of a larger file fetches its tail, where Parquet keeps its footer.
 - Listings are paged and run in parallel (`webhdfs_list_parallelism`); request counts matter more than bandwidth for
   many small files. See [test/bench](test/bench/README.md) for numbers.
 - DuckDB's external file cache treats `webhdfs://` paths as local files, so it caches them only with
-  `SET cache_local_files = true` (WebHDFS files carry a modification-time version tag, so cached data is invalidated
-  when a file changes).
+  `SET cache_local_files = true`. WebHDFS files carry a version tag of their inode id (`fileId`), modification time and
+  length, so under `validate_external_file_cache = 'VALIDATE_ALL'` (the default) cached data and Parquet metadata are
+  invalidated when a file is replaced (a new inode: overwrite, rename, `distcp`), even by one of the same length with
+  its old modification time kept (`distcp -pt`). This needs a server that reports `fileId`; HDFS NameNodes do.
+  Without it, only the modification time and length tell versions apart. A file changed in place (truncated and
+  appended to the same length, then its mtime set back) keeps its tag.
+  `VALIDATE_REMOTE` treats `webhdfs://` as local and never revalidates it; `NO_VALIDATION` never does either.
 
 ## Limitations
 
 - Files can't be written at arbitrary offsets or truncated (HDFS is append-only). A chunk that fails to `CREATE` or
   `APPEND` is not re-sent (the server may already have applied it); the write fails and the handle refuses further
   writes.
-- A write that fails, or whose handle is destroyed while an error unwinds, deletes the file it created. (A handle
+- A write that fails, or whose handle is destroyed while an error unwinds, deletes the file it created. That includes a
+  final `Close()` that fails after the last chunk was sent, which DuckDB itself treats as an unknown outcome. (A handle
   closed normally, or dropped without an error, commits, as local files do.) With `COPY ... TO` over an existing
   file, DuckDB writes a temporary file and renames it over the target (an atomic `RENAME` with
   `renameoptions=OVERWRITE`; HttpFS gateways that lack the option fall back to delete-then-rename), so the original
-  survives a failure. With `USE_TMP_FILE false`, a failed overwrite can leave an incomplete file. An aborted append
-  to an existing file is not rolled back.
+  survives a failure. With `USE_TMP_FILE false`, a failed overwrite loses the original: once the `CREATE` that
+  replaces it has succeeded, the abort deletes the file, and a `CREATE` whose DataNode upload failed can leave an
+  incomplete file. An aborted append to an existing file is not rolled back.
 - Partition filters don't reduce listing (see above).
 - Writes buffer up to `webhdfs_write_chunk_size` per open file; `PARTITION_BY` with many open partitions multiplies
   that.
@@ -231,6 +254,32 @@ listing or for httpfs's timeout; the shell then just offers nothing.
   issuing tokens, and the loadable extension on macOS and Windows (on Linux, CI tests it in a stock DuckDB 2.0.0
   with httpfs from DuckDB's extension repository).
 - No metadata-changing functions (`SETPERMISSION`, `SETOWNER`, quotas, snapshots).
+- Builds for Linux, macOS and Windows, not for WebAssembly: a browser's fetch follows redirects itself, but the
+  extension must handle DataNode redirects (address mapping, request bodies), and Kerberos needs `dlopen`. On
+  Windows, autocomplete of `webhdfs://` directories relies on a workaround for the shell's path separator (`/`, not
+  `\`) that only CI's Windows build exercises.
+- An `http` secret's extra headers and bearer token are sent with the DataNode requests a NameNode redirects to, as
+  well as to the NameNode or gateway. Where DataNodes must not see a credential, give it in a `webhdfs` secret
+  (`AUTH`, `DELEGATION_TOKEN`) instead: those are sent to the NameNode only.
+- With `enable_external_access = false`, `allowed_directories` and `allowed_paths` are checked against the
+  `webhdfs://` URL, not against the DataNode a NameNode redirects to. A NameNode, or on plain `webhdfs://` anyone who
+  can rewrite its responses, can send a read or write to any host, internal ones included. With Kerberos against a
+  cluster that issues no delegation tokens (requests then authenticate with SPNEGO each time), a ticket for that host
+  is requested from the KDC. `swebhdfs://` rules out the man in the
+  middle, not a hostile NameNode, so these settings are no sandbox against the cluster.
+- As in DuckDB, an allowed directory itself (`webhdfs://nn/data` for `allowed_directories = ['webhdfs://nn/data/']`)
+  is accessible to calls on a directory: listing, creating or removing it, and the metadata functions, which check
+  every path as a directory. Opening it as a file is refused, and so are `webhdfs_checksum` and
+  `webhdfs_block_locations`, which describe a file's contents. `webhdfs_home_directory`, `webhdfs_trash_root`,
+  `webhdfs_server_defaults` and `webhdfs_snapshottable_directories` ask about the cluster, whatever path is given.
+- A request whose response is lost is retried by DuckDB. For `DELETE`, the retry then reports "no such file" for a
+  file that was deleted; for a write that must not overwrite (`CREATE` without overwrite), it reports that the file
+  already exists. Neither leaves wrong data, but the statement fails.
+- A write handle that is dropped without `Close()` commits from its destructor, and a failure there can't be
+  reported: DuckDB's `EXPORT DATABASE` drops `schema.sql` and `load.sql` that way, so a failed commit of either goes
+  unnoticed. `COPY ... TO` always closes its files.
+- `SET redact_http_logs = false` puts full WebHDFS request URLs in `duckdb_logs`, including `delegation=` tokens
+  and `user.name=`.
 
 ## Building
 

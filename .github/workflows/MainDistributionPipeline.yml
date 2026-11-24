@@ -6,6 +6,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create on the built commit (vX.Y.Z); leave empty for a plain build'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
@@ -16,6 +22,8 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
+      # A release started from the Actions tab stamps the binaries with its tag.
+      extension_tag: ${{ inputs.tag || '' }}
       duckdb_version: v2.0.1
       ci_tools_version: v2.0-cyanoptera
       extension_name: webhdfs
@@ -93,13 +101,15 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
-  # Pushing a v* tag builds every platform (above) and publishes a GitHub
-  # release with one extension binary per platform attached. Only the
-  # *.duckdb_extension(.wasm) files are attached; test-support is never
-  # published. Release notes are generated from the merged pull requests.
+  # Pushing a v* tag, or running this workflow from the Actions tab with a
+  # v* tag input (the release then creates the tag on the built commit),
+  # builds every platform (above) and publishes a GitHub release with one
+  # extension binary per platform attached. Only the *.duckdb_extension(.wasm)
+  # files are attached; test-support is never published. Release notes are
+  # generated from the merged pull requests.
   release:
     name: Publish release
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.duckdb-stable-build.result == 'success' }}
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) && needs.duckdb-stable-build.result == 'success' }}
     needs: duckdb-stable-build
     runs-on: ubuntu-latest
     permissions:
@@ -111,7 +121,7 @@ jobs:
           path: artifacts
       - name: Collect extension binaries
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           mkdir -p dist
           for dir in artifacts/*-extension-*; do
@@ -133,5 +143,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           fail_on_unmatched_files: true

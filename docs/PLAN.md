@@ -1,7 +1,7 @@
 # Plan: a WebHDFS filesystem for DuckDB
 
 Status: implemented (see "Implementation status" at the end). Targets DuckDB
-v2.0.0, the same version as `duckdb-hdfs` and this repo's CI.
+v2.0.1, the same version as `duckdb-hdfs` and this repo's CI.
 
 ## Goal
 
@@ -40,7 +40,7 @@ implemented here.
 
 ## 1. How httpfs supplies HTTP
 
-DuckDB v2.0.0 core defines an abstract HTTP layer in
+DuckDB v2.0.1 core defines an abstract HTTP layer in
 `duckdb/main/http/http_util.hpp`:
 
 - `HTTPUtil`: the provider, which you get with `HTTPUtil::Get(db)`. Core's
@@ -74,7 +74,7 @@ metadata. So webhdfs loads httpfs itself, in two steps.
 - If httpfs isn't installed yet, that function installs it from the autoinstall
   repository and then loads it.
 - It follows the user's `autoinstall_known_extensions` and
-  `autoload_known_extensions` settings. Both are on by default in DuckDB v2.0.0.
+  `autoload_known_extensions` settings. Both are on by default in DuckDB v2.0.1.
 - It is `noexcept` and returns false on failure, for example when offline or
   when autoloading is off. In that case `LOAD webhdfs` still succeeds.
 - Loading one extension from inside another's load step is safe. DuckDB's
@@ -135,13 +135,13 @@ Build changes:
 - Drop the OpenSSL dependency, which leaves `vcpkg.json` with no dependencies. (Superseded: `vcpkg.json` lists
   openssl and curl, which the statically linked httpfs needs in the test runner.)
 - In `extension_config.cmake`, also load httpfs from Git, pinned to the commit
-  that matches DuckDB v2.0.0, so the test runner and the static shell have it:
+  that matches DuckDB v2.0.1, so the test runner and the static shell have it:
 
   ```cmake
   duckdb_extension_load(webhdfs SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR} LOAD_TESTS)
   duckdb_extension_load(httpfs
       GIT_URL https://github.com/duckdb/duckdb-httpfs
-      GIT_TAG <commit matching v2.0.0>
+      GIT_TAG <commit matching v2.0.1>
       INCLUDE_DIR src/include)
   ```
 
@@ -453,7 +453,7 @@ the files that survive needs no extra `GETFILESTATUS`.
 
 ### Pruning partitions while listing
 
-**The gap.** In DuckDB v2.0.0 the default `ComplexFilterPushdown` calls
+**The gap.** In DuckDB v2.0.1 the default `ComplexFilterPushdown` calls
 `GetAllFiles()`, which expands the whole glob first and filters afterwards.
 With `**`, or `*` at partition levels, every partition directory is listed, at
 one NameNode request each, even when the query wants one month. On a table with
@@ -659,7 +659,7 @@ log has full request URLs, tokens included.)
   behaviour. Our own tests cover the behaviour users rely on: patterns, hidden
   entries, function columns.
 - **Partition-pruning API stability.** Moot: pruning while listing was not
-  possible in v2.0.0 and the code was removed (§10).
+  possible in v2.0.1 and the code was removed (§10).
 - **httpfs loading when webhdfs loads.** If a user has
   `autoinstall_known_extensions` on but no network, `LOAD webhdfs` tries an
   install and waits for it to time out before succeeding. If that proves
@@ -672,7 +672,7 @@ Everything in milestones 1–7 is implemented and tested against real Hadoop 3.4
 clusters in Docker (`test/sql/integration`, `test/sql/kerberos`). Where the
 implementation differs from this plan:
 
-- **Pruning partitions while listing (§5c) is not possible in DuckDB v2.0.0.**
+- **Pruning partitions while listing (§5c) is not possible in DuckDB v2.0.1.**
   `MultiFileReader::BindOptions` iterates every file of a scan at bind time
   whenever `hive_partitioning` is on, to check that all files have the same
   partition columns. So the whole tree is listed before the optimizer sees any
@@ -731,7 +731,7 @@ implementation differs from this plan:
   request, and only when autoloading is enabled.
 - **yyjson visibility (§9) is not a risk.** A loadable extension links the parts
   of DuckDB core it uses (yyjson included) statically, with their symbols
-  hidden. The stripped Linux build loads and runs in a stock DuckDB 2.0.0
+  hidden. The stripped Linux build loads and runs in a stock DuckDB 2.0.1
   (Python package) next to a separately built httpfs.
 - **Performance work after the first version.**
   - Small files (up to the read-ahead size) are fetched whole and cached per

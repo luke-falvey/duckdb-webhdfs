@@ -112,8 +112,7 @@ unique_ptr<HTTPParams> WebHdfsHttp::CreateParams(DatabaseInstance &db, optional_
 	auto &util = GetHttpUtil(db);
 	unique_ptr<HTTPParams> params;
 	if (opener) {
-		FileOpenerInfo info;
-		info.file_path = original_url;
+		FileOpenerInfo info(original_url);
 		params = util.InitializeParameters(opener, &info);
 	} else {
 		params = util.InitializeParameters(db, original_url);

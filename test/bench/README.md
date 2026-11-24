@@ -35,7 +35,7 @@ network every request costs 0.5-5 ms, which makes the request counts the number 
 
 What the numbers show:
 
-- **Partition filters in `WHERE` don't reduce listing.** DuckDB (v2.0.0) lists every file of a Hive-partitioned
+- **Partition filters in `WHERE` don't reduce listing.** DuckDB (v2.0.1) lists every file of a Hive-partitioned
   read while binding the query, before filters are applied, so `WHERE year = 2023 AND month = 5` still lists all
   1,746 directories; it only skips reading the other files. Naming the partitions in the path lists only those
   directories: 2,085 requests become 62, and braces for several values go further (8).

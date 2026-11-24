@@ -404,10 +404,12 @@ SELECT count(*) FROM webhdfs_ls('webhdfs://localhost:9870/test');
 ----
 disabled by configuration
 
-query I
+# with external access disabled, DuckDB (since v2.0.1) refuses any remote path with a '..' segment before it checks the
+# allowlists, even one that stays inside the allowed directory
+statement error
 SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/sub/../people.csv');
 ----
-5
+disabled by configuration
 
 statement error
 SELECT count(*) FROM read_csv('webhdfs://localhost:9870/test/data/../many/f001.txt');

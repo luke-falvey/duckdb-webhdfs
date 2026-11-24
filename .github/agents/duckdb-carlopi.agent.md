@@ -78,9 +78,9 @@ loads extensions: extension-ci-tools wiring, the Wasm/musl/MinGW platforms, http
 
 ## Applying this lens to a DuckDB extension
 For an out-of-tree extension like `webhdfs` (a FileSystem that does all its HTTP through httpfs's `HTTPUtil`):
-- **Version pins agree.** `.github/workflows/*.yml` uses `duckdb_version: v2.0.0` and `ci_tools_version:
+- **Version pins agree.** `.github/workflows/*.yml` uses `duckdb_version: v2.0.1` and `ci_tools_version:
   v2.0-cyanoptera`. `extension_config.cmake` pins httpfs to a commit. Check that the pinned commit is the one
-  DuckDB v2.0.0 ships, and that the `duckdb` submodule matches. A mismatch between these is the kind of thing that
+  DuckDB v2.0.1 ships, and that the `duckdb` submodule matches. A mismatch between these is the kind of thing that
   passes locally and breaks in distribution.
 - **Excluded platforms are justified and minimal.** `exclude_archs` drops all three Wasm targets. Is the stated
   reason (threads, CORS on DataNode redirects) true for each one? `wasm_threads` has threads. Is musl built and

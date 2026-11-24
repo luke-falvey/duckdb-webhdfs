@@ -177,7 +177,7 @@ WHERE year = 2024 AND month = 10;
 ```
 
 This works and reads only the matching files, but DuckDB lists every partition directory while binding the query,
-before it looks at the filters (this is DuckDB's multi-file reader, in v2.0.0, for any filesystem). On a big table
+before it looks at the filters (this is DuckDB's multi-file reader, in v2.0.1, for any filesystem). On a big table
 that is one NameNode request per directory. When you know the partitions, name them in the path: only those
 directories are listed, and directories named with braces are visited without listing their parent.
 
@@ -251,7 +251,7 @@ listing or for httpfs's timeout; the shell then just offers nothing.
   that.
 - Not tested yet: `swebhdfs://` against a TLS cluster, a real Apache Knox (gateway paths and `http` secret headers
   were only checked against a stand-in server), Kerberos with a gateway that authenticates every request instead of
-  issuing tokens, and the loadable extension on macOS and Windows (on Linux, CI tests it in a stock DuckDB 2.0.0
+  issuing tokens, and the loadable extension on macOS and Windows (on Linux, CI tests it in a stock DuckDB 2.0.1
   with httpfs from DuckDB's extension repository).
 - No metadata-changing functions (`SETPERMISSION`, `SETOWNER`, quotas, snapshots).
 - Builds for Linux, macOS and Windows, not for WebAssembly: a browser's fetch follows redirects itself, but the
@@ -283,7 +283,7 @@ listing or for httpfs's timeout; the shell then just offers nothing.
 
 ## Building
 
-Targets DuckDB v2.0.0 (the `duckdb` submodule). httpfs is built alongside, from the commit DuckDB v2.0.0 pins, for the
+Targets DuckDB v2.0.1 (the `duckdb` submodule). httpfs is built alongside, from the commit DuckDB v2.0.1 pins, for the
 test runner and the bundled shell only: the extension itself doesn't link it.
 
 ```sh

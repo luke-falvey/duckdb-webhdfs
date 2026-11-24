@@ -114,7 +114,7 @@ For `duckdb-webhdfs` (a `FileSystem` over WebHDFS REST, all HTTP through httpfs'
   rather than creating near-duplicates. (#23527)
 - **Benchmarks with numbers.** `test/bench/webhdfs_bench.sh` should report before/after results for changes
   that claim to be faster, for example the cost of parallel range reads compared with one stream.
-- **Version pins.** CI targets DuckDB v2.0.0; check that the httpfs build used in tests matches the core
+- **Version pins.** CI targets DuckDB v2.0.1; check that the httpfs build used in tests matches the core
   `HTTPUtil` contract the extension relies on (#26947 was blocked on exactly this).
 - **Error tests carry expected messages.** `statement error` blocks in `test/sql/*.test` should include the
   expected error text. (#18518)

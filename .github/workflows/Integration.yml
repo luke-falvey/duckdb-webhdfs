@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 90
     env:
       GEN: ninja
-      DUCKDB_VERSION: v2.0.0
+      DUCKDB_VERSION: v2.0.1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v4

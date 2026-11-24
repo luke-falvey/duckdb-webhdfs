@@ -88,7 +88,7 @@ the GEOMETRY type work, and they bump those extensions through DuckDB CI themsel
 
 For `duckdb-webhdfs` (C++ extension, `ExtensionLoader` entry point, HTTP through core's `HTTPUtil`):
 
-- **Which ABI and how tightly pinned.** It is a C++ extension, so it is bound to one DuckDB version (v2.0.0). Which
+- **Which ABI and how tightly pinned.** It is a C++ extension, so it is bound to one DuckDB version (v2.0.1). Which
   core internals beyond `FileSystem`, `HTTPUtil`, `SecretManager` and `DBConfig` does it rely on? Every
   internal header used is a future break. Is there a plan for the C API V2 file system support (#25916) if
   cross-version builds matter? Check `src/webhdfs_http.cpp` and `src/include/*.hpp` includes.

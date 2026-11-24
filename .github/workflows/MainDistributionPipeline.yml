@@ -92,3 +92,46 @@ jobs:
           path: artifact
           overwrite: true
           if-no-files-found: error
+
+  # Pushing a v* tag builds every platform (above) and publishes a GitHub
+  # release with one extension binary per platform attached. Only the
+  # *.duckdb_extension(.wasm) files are attached; test-support is never
+  # published. Release notes are generated from the merged pull requests.
+  release:
+    name: Publish release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.duckdb-stable-build.result == 'success' }}
+    needs: duckdb-stable-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-extension-*'
+          path: artifacts
+      - name: Collect extension binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for dir in artifacts/*-extension-*; do
+            platform="${dir##*-extension-}"
+            for file in "$dir"/*.duckdb_extension "$dir"/*.duckdb_extension.wasm; do
+              [ -f "$file" ] || continue
+              base="$(basename "$file")"
+              name="${base%%.*}"
+              suffix="${base#"$name"}"
+              cp "$file" "dist/${name}-${TAG}-${platform}${suffix}"
+            done
+          done
+          ls -l dist
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::error::no extension binaries to release"
+            exit 1
+          fi
+          (cd dist && sha256sum * > SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

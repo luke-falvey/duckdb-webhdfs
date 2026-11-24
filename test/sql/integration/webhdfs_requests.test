@@ -161,12 +161,12 @@ CALL truncate_duckdb_logs();
 statement ok
 SELECT * FROM read_csv('webhdfs://localhost:9870/test/data/people.csv');
 
-# no OPEN; DuckDB's CSV reader opens the file by name twice (sniff, scan), so each open costs a GETFILESTATUS (O6: this
-# drops once core keeps the listing's extended_info for CSV opens)
+# no OPEN, and one GETFILESTATUS, from resolving the path. Since DuckDB v2.0.1 the CSV reader opens the resolved file
+# with its extended_info (sniff and scan), so neither open stats it again (O6)
 query TTI
 FROM ops();
 ----
-GETFILESTATUS	true	2
+GETFILESTATUS	true	1
 
 # a new cache size applies to the clusters in use right away: setting it to 0 drops the cached file even though no
 # request is made before it is raised again. The read fetches the file from the DataNode again (with the redirect
